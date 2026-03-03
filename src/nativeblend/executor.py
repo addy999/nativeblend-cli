@@ -81,9 +81,9 @@ bpy.ops.object.delete()
 
         # Check if artifact file exists
         if artifact_path and os.path.exists(artifact_path):
-            return {"success": True, "output": result, "artifact": artifact_path}
+            return {"success": True, "output": result, "artifact_path": artifact_path}
 
-        return {"success": True, "output": result, "artifact": None}
+        return {"success": True, "output": result, "artifact_path": None}
 
     except Exception as e:
         if os.path.exists(temp_file_path):

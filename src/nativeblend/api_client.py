@@ -69,23 +69,47 @@ class APIClient:
         except requests.RequestException:
             return None
 
-    def completed(self, task_id: str, result: Dict[str, Any]) -> bool:
+    def completed(
+        self,
+        task_id: str,
+        status: str = "completed",
+        output: str = "",
+        error: Optional[str] = None,
+        artifact: Optional[Any] = None,
+    ) -> bool:
         """
         Mark a task as completed and submit the Blender execution result.
 
         Args:
             task_id: The ID of the task to mark as completed
-            result: Dictionary containing execution result (output, error, etc.)
+            status: Task status - "completed" or "failed"
+            output: Blender script stdout/stderr output
+            error: Error message if status is "failed"
+            artifact: Open file object to upload (e.g. a rendered GLB/PNG)
 
         Returns:
             True if submission was successful, False otherwise
         """
         try:
-            # TODO: handle multipart/form-data if artifact is included in result
+            form_data: Dict[str, str] = {"status": status, "output": output}
+            if error:
+                form_data["error"] = error
+
+            files = None
+            if artifact is not None:
+                filename = getattr(artifact, "name", "artifact")
+                files = {"artifact": (filename, artifact, "application/octet-stream")}
+
+            # Omit Content-Type so requests can set the multipart boundary automatically
+            headers = (
+                {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+            )
+
             response = requests.post(
                 f"{self.base_url}/cli/tasks/{task_id}/complete",
-                headers=self._get_headers(),
-                json=result,
+                headers=headers,
+                data=form_data,
+                files=files,
                 timeout=self.timeout,
             )
 
