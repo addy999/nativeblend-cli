@@ -257,12 +257,6 @@ def generate(
     prompt: str = typer.Argument(
         help="Natural language description of the 3D model to generate"
     ),
-    output_dir: Optional[Path] = typer.Option(
-        None,
-        "--output-dir",
-        "-o",
-        help="Directory to save generation results (defaults to config setting)",
-    ),
     image_url: Optional[str] = typer.Option(
         None,
         "--image",
@@ -324,21 +318,11 @@ def generate(
         b64 = base64.b64encode(data).decode("utf-8")
         resolved_image_url = f"data:{mime_type};base64,{b64}"
 
-    # Prepare output directory
-    if not output_dir:
-        default_dir = config.get("output.default_dir", "./outputs")
-        timestamp = int(time.time())
-        output_dir = FilePath(default_dir) / f"generation_{timestamp}"
-
-    output_dir = FilePath(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     if verbose:
         console.print(f"[bold blue]Generating model for prompt:[/bold blue] {prompt}")
         if resolved_image_url:
             console.print(f"[bold blue]Reference image:[/bold blue] {image_url}")
         console.print(f"[bold blue]Mode:[/bold blue] {mode}")
-        console.print(f"[bold blue]Output directory:[/bold blue] {output_dir}")
 
     # Initialize API client
     client = APIClient()
@@ -353,7 +337,6 @@ def generate(
 
     if not result:
         console.print("[red]✗[/red] Failed to submit generation request")
-        console.print("[dim]Please check your API key and internet connection[/dim]")
         raise typer.Exit(1)
 
     generation_id = result["generation_id"]
@@ -424,7 +407,6 @@ def generate(
                 f"[bold]Prompt:[/bold] {prompt}\n"
                 f"[bold]Mode:[/bold] {mode}\n"
                 f"[bold]Generation ID:[/bold] {generation_id}\n"
-                f"[bold]Output directory:[/bold] {output_dir}\n"
                 f"[bold]Elapsed time:[/bold] {elapsed_time:.1f}s\n\n"
                 f"[dim]View your model at: https://nativeblend.app/builds/{generation_id}[/dim]",
                 title="Success",
