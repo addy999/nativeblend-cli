@@ -1,12 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "native-blend-cli"
+name = "nativeblend"
 version = "0.1.0"
-description = "Add your description here"
+description = "NativeBlend CLI - Generate 3D models in Blender using AI"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.135.1",
-    "python-multipart>=0.0.22",
-    "typer-cli>=0.24.0",
-    "uvicorn>=0.41.0",
+    "typer>=0.15.1",
+    "keyring>=25.5.0",
+    "requests>=2.32.0",
+    "rich>=13.9.4",
 ]
+
+[project.scripts]
+nativeblend = "nativeblend.main:app"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nativeblend"]
