@@ -116,3 +116,93 @@ class APIClient:
             return response.status_code == 200
         except requests.RequestException:
             return False
+
+    def submit_generation(
+        self,
+        prompt: str,
+        image_url: Optional[str] = None,
+        mode: str = "standard",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Submit a generation request to the API.
+
+        Args:
+            prompt: Natural language description of the 3D model
+            image_url: Optional reference image URL or file path
+            mode: Generation mode - "express", "standard", or "pro"
+
+        Returns:
+            Dictionary with generation_id and status, or None if failed
+        """
+        try:
+            payload = {
+                "prompt": prompt,
+                "mode": mode,
+            }
+            if image_url:
+                payload["image_url"] = image_url
+
+            response = requests.post(
+                f"{self.base_url}/generate",
+                headers=self._get_headers(),
+                json=payload,
+                timeout=self.timeout,
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return None
+        except requests.RequestException:
+            return None
+
+    def get_generation_status(self, generation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the status of a generation task.
+
+        Args:
+            generation_id: The ID of the generation task
+
+        Returns:
+            Dictionary with status, progress, and elapsed_time, or None if failed
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/generate/{generation_id}/status",
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return None
+        except requests.RequestException:
+            return None
+
+    def get_generation_result(self, generation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the final result of a completed generation task.
+
+        Args:
+            generation_id: The ID of the generation task
+
+        Returns:
+            Dictionary with status, elapsed_time, and other result data, or None if failed
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/generate/{generation_id}/result",
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 202:
+                # Still processing
+                return {"status": "PROCESSING"}
+            else:
+                return None
+        except requests.RequestException:
+            return None
