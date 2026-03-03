@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Optional, Any
 import keyring
+import platform
 
 # Constants
 CONFIG_DIR = Path.home() / ".config" / "nativeblend"
@@ -9,6 +10,20 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 KEYRING_SERVICE = "nativeblend-cli"
 KEYRING_USERNAME = "api-key"
 DEFAULT_API_ENDPOINT = "https://blender-ai.fly.dev"
+
+
+def _get_default_blender_path() -> str:
+    """Get default Blender path based on operating system"""
+    system = platform.system()
+    if system == "Darwin":  # macOS
+        return "/Applications/Blender.app/Contents/MacOS/Blender"
+    elif system == "Windows":
+        return "C:\\Program Files\\Blender Foundation\\Blender\\blender.exe"
+    else:  # Linux and other Unix-like systems
+        return "/usr/bin/blender"
+
+
+DEFAULT_BLENDER_PATH = _get_default_blender_path()
 
 
 class Config:
@@ -26,9 +41,20 @@ class Config:
 
         try:
             with open(self.config_file, "r") as f:
-                return json.load(f)
+                loaded_config = json.load(f)
         except (json.JSONDecodeError, IOError):
             return self._get_default_config()
+
+        # Merge loaded config with defaults to ensure all keys are present
+        merged_config = self._merge_configs(self._get_default_config(), loaded_config)
+
+        # If the config was missing keys, save the updated config
+        if merged_config != loaded_config:
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            with open(self.config_file, "w") as f:
+                json.dump(merged_config, f, indent=2)
+
+        return merged_config
 
     def _get_default_config(self) -> dict:
         """Get default configuration"""
@@ -43,8 +69,27 @@ class Config:
             },
             "generation": {
                 "default_mode": "standard",
+                "blender_path": DEFAULT_BLENDER_PATH,
             },
         }
+
+    def _merge_configs(self, defaults: dict, loaded: dict) -> dict:
+        """Deep merge loaded config with defaults, preserving loaded values"""
+        result = defaults.copy()
+
+        for key, value in loaded.items():
+            if (
+                key in result
+                and isinstance(result[key], dict)
+                and isinstance(value, dict)
+            ):
+                # Recursively merge nested dicts
+                result[key] = self._merge_configs(result[key], value)
+            else:
+                # Use loaded value if it exists
+                result[key] = value
+
+        return result
 
     def save(self) -> None:
         """Save configuration to file"""
@@ -103,6 +148,10 @@ class Config:
     def get_timeout(self) -> int:
         """Get API timeout in seconds"""
         return self.get("api.timeout", 300)
+
+    def get_blender_path(self) -> str:
+        """Get Blender executable path"""
+        return self.get("generation.blender_path", DEFAULT_BLENDER_PATH)
 
     def initialize(self) -> None:
         """Initialize configuration directory and file with defaults"""
