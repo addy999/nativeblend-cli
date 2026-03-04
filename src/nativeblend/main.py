@@ -478,6 +478,7 @@ def generate(
         )
 
     elif task_status == "FAILURE":
+        # TODO: Fetch error details from API and display them here
         console.print(
             Panel(
                 "[bold red]✗ Model generation failed[/bold red]\n\n"
