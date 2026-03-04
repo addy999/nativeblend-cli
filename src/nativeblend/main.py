@@ -3,6 +3,8 @@
 NativeBlend CLI - Generate 3D models in Blender using natural language prompts
 """
 
+import os
+
 import typer
 import sys
 import time
@@ -418,6 +420,12 @@ def generate(
         f"[green]✓[/green] Generation started (ID: [cyan]{generation_id}[/cyan])"
     )
 
+    output_path = os.path.join(config.get("output.default_dir"), generation_id)
+    console.print(
+        f"[dim]You can view progress files and renders in:[/dim] [cyan]{output_path}/[/cyan]"
+    )
+    os.makedirs(output_path, exist_ok=True)
+
     try:
         # Stream logs in real-time via WebSocket
         with console.status("[cyan]→[/cyan] Generating..."):
@@ -461,6 +469,31 @@ def generate(
             raise typer.Exit(1)
 
         elapsed_time = final_result.get("elapsed_time", 0)
+        model_file_url = final_result.get("model_file_url")
+        blender_file_url = final_result.get("blender_file_url")
+
+        # Download files if URLs are provided and save to output directory
+        if model_file_url:
+            console.print(f"[cyan]→[/cyan] Downloading model file...")
+            model_response = client.download_file(model_file_url)
+            if model_response:
+                model_path = os.path.join(output_path, "final-model.glb")
+                with open(model_path, "wb") as f:
+                    f.write(model_response)
+                console.print(f"[green]✓[/green] Model file saved to: {model_path}")
+            else:
+                console.print(f"[yellow]⚠[/yellow] Failed to download model file")
+
+        if blender_file_url:
+            console.print(f"[cyan]→[/cyan] Downloading Blender file...")
+            blender_response = client.download_file(blender_file_url)
+            if blender_response:
+                blender_path = os.path.join(output_path, "final-model.blend")
+                with open(blender_path, "wb") as f:
+                    f.write(blender_response)
+                console.print(f"[green]✓[/green] Blender file saved to: {blender_path}")
+            else:
+                console.print(f"[yellow]⚠[/yellow] Failed to download Blender file")
 
         # Show success message
         console.print()
@@ -471,7 +504,7 @@ def generate(
                 f"[bold]Mode:[/bold] {mode}\n"
                 f"[bold]Generation ID:[/bold] {generation_id}\n"
                 f"[bold]Elapsed time:[/bold] {elapsed_time:.1f}s\n\n"
-                f"[dim]View your model at: https://nativeblend.app/builds/{generation_id}[/dim]",
+                f"[dim]View your model at: https://nativeblend.app/build?generationId={generation_id}[/dim]",
                 title="Success",
                 border_style="green",
             )

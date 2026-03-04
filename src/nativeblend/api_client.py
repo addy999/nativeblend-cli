@@ -231,6 +231,29 @@ class APIClient:
         except requests.RequestException:
             return False
 
+    def download_file(self, url: str) -> Optional[bytes]:
+        """
+        Download a file from the given URL and return its content.
+
+        Args:
+            url: The URL of the file to download
+
+        Returns:
+            The raw bytes content of the file, or None if the download failed
+        """
+        try:
+            response = requests.get(
+                url,
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+            if response.status_code == 200:
+                return response.content
+            else:
+                return None
+        except requests.RequestException:
+            return None
+
     def stream_generation_logs(
         self, generation_id: str, on_log: Callable[[str], None]
     ) -> Optional[str]:
