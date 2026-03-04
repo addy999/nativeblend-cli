@@ -154,9 +154,13 @@ class APIClient:
             if response.status_code == 200:
                 return response.json()
             else:
-                return None
-        except requests.RequestException:
-            return None
+                try:
+                    error_detail = response.json().get("detail", response.text)
+                except Exception:
+                    error_detail = response.text or f"HTTP {response.status_code}"
+                return {"error": error_detail, "status_code": response.status_code}
+        except requests.RequestException as e:
+            return {"error": str(e)}
 
     def get_generation_status(self, generation_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -242,7 +246,9 @@ class APIClient:
             # Create WebSocket connection with auth header
             ws = websocket.create_connection(
                 ws_url,
-                header=[f"Authorization: Bearer {self.api_key}"] if self.api_key else None,
+                header=(
+                    [f"Authorization: Bearer {self.api_key}"] if self.api_key else None
+                ),
                 timeout=10,
             )
 

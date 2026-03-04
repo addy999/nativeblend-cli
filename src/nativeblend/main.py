@@ -408,8 +408,9 @@ def generate(
         mode=mode,
     )
 
-    if not result:
-        console.print("[red]✗[/red] Failed to submit generation request")
+    if not result or "error" in result:
+        error_msg = result.get("error") if result else "Unknown error"
+        console.print(f"[red]✗[/red] Failed to submit generation request: {error_msg}")
         raise typer.Exit(1)
 
     generation_id = result["generation_id"]
