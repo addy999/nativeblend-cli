@@ -70,8 +70,6 @@ def init():
             "\n[dim]Run 'nativeblend auth login' to authenticate with your API key[/dim]"
         )
 
-        worker_setup()
-
     except Exception as e:
         console.print(f"[red]✗[/red] Failed to initialize config: {e}")
         raise typer.Exit(1)
@@ -420,23 +418,6 @@ def generate(
         raise typer.Exit(1)
 
 
-@worker_app.command("init")
-def worker_setup():
-    """
-    Setup worker environment.
-    This checks for Blender installation and tests running a simple script.
-    """
-    from .worker import WorkerManager
-
-    try:
-        worker = WorkerManager()
-        worker.setup()
-        console.print("[green]✓[/green] Worker environment initialized successfully")
-    except Exception as e:
-        console.print(f"[red]✗[/red] Failed to initialize worker environment: {e}")
-        raise typer.Exit(1)
-
-
 @worker_app.command("start")
 def worker_start(
     workers: int = typer.Option(
@@ -448,9 +429,9 @@ def worker_start(
 ):
     """
     Start background workers to execute Blender tasks.
-    Workers will poll for pending tasks and execute them.
+    Workers will run in the background and poll for pending tasks.
     """
-    from .worker import WorkerManager
+    from .worker import get_worker_service
 
     # Check authentication
     api_key = config.get_api_key()
@@ -461,8 +442,50 @@ def worker_start(
         raise typer.Exit(1)
 
     try:
-        manager = WorkerManager(num_workers=workers, poll_interval=poll_interval)
-        manager.start()
+        # Create worker service
+        service = get_worker_service(num_workers=workers, poll_interval=poll_interval)
+
+        # Check if already running
+        if service.is_running():
+            console.print("[yellow]⚠[/yellow] Worker service is already running")
+            console.print(
+                f"[dim]PID: {service.get_pid()}[/dim]\n"
+                "[dim]Run 'nativeblend worker stop' to stop it first[/dim]"
+            )
+            raise typer.Exit(1)
+
+        # Start the service in background
+        console.print(
+            f"[cyan]→[/cyan] Starting worker service with {workers} worker(s)..."
+        )
+        service.start()
+
+        # Verify it started
+        import time
+
+        time.sleep(1)  # Give it a moment to start
+
+        if service.is_running():
+            console.print(
+                Panel(
+                    f"[bold green]✓ Worker service started successfully![/bold green]\n\n"
+                    f"[bold]Workers:[/bold] {workers}\n"
+                    f"[bold]Poll interval:[/bold] {poll_interval}s\n"
+                    f"[bold]PID:[/bold] {service.get_pid()}\n\n"
+                    f"[dim]View logs:[/dim] [cyan]nativeblend worker logs[/cyan]\n"
+                    f"[dim]Check status:[/dim] [cyan]nativeblend worker status[/cyan]\n"
+                    f"[dim]Stop workers:[/dim] [cyan]nativeblend worker stop[/cyan]",
+                    title="Worker Service",
+                    border_style="green",
+                )
+            )
+        else:
+            console.print(
+                "[red]✗[/red] Worker service failed to start\n"
+                "[dim]Check logs with:[/dim] [cyan]nativeblend worker logs[/cyan]"
+            )
+            raise typer.Exit(1)
+
     except ValueError as e:
         console.print(f"[red]✗[/red] Configuration error: {e}")
         raise typer.Exit(1)
@@ -475,13 +498,161 @@ def worker_start(
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]✗[/red] Failed to start workers: {e}")
+        import traceback
+
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise typer.Exit(1)
+
+
+@worker_app.command("stop")
+def worker_stop():
+    """Stop running worker service"""
+    from .worker import get_worker_service
+
+    try:
+        service = get_worker_service()
+
+        if not service.is_running():
+            console.print("[yellow]⚠[/yellow] Worker service is not running")
+            raise typer.Exit(0)
+
+        console.print("[cyan]→[/cyan] Stopping worker service...")
+        pid = service.get_pid()
+
+        # Stop the service (sends SIGTERM)
+        service.stop()
+
+        console.print(
+            Panel(
+                f"[bold green]✓ Worker service stopped[/bold green]\n\n"
+                f"[bold]PID:[/bold] {pid}\n\n"
+                f"[dim]The service was gracefully shut down[/dim]",
+                title="Worker Service",
+                border_style="green",
+            )
+        )
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to stop workers: {e}")
         raise typer.Exit(1)
 
 
 @worker_app.command("status")
 def worker_status():
     """Show worker status and statistics"""
-    console.print(
-        "[yellow]Worker status tracking not yet implemented[/yellow]\n"
-        "[dim]This will show real-time worker statistics in a future version[/dim]"
-    )
+    from .worker import get_worker_service, load_status
+    from datetime import datetime, timedelta
+
+    try:
+        service = get_worker_service()
+        is_running = service.is_running()
+
+        # Create status table
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("", style="bold")
+        table.add_column("")
+
+        if is_running:
+            pid = service.get_pid()
+            table.add_row("Status", "[green]✓ Running[/green]")
+            table.add_row("PID", str(pid))
+
+            # Load stats from file
+            stats = load_status()
+            if stats:
+                # Add stats to table
+                if stats.get("start_time"):
+                    start_time = datetime.fromisoformat(stats["start_time"])
+                    table.add_row("Started", start_time.strftime("%Y-%m-%d %H:%M:%S"))
+
+                uptime_seconds = stats.get("uptime_seconds", 0)
+                uptime = str(timedelta(seconds=int(uptime_seconds)))
+                table.add_row("Uptime", uptime)
+
+                table.add_row("Tasks Completed", str(stats.get("completed", 0)))
+                table.add_row("Tasks Failed", str(stats.get("failed", 0)))
+                table.add_row("Tasks In Progress", str(stats.get("in_progress", 0)))
+
+            console.print(
+                Panel(
+                    table,
+                    title="Worker Service Status",
+                    border_style="green",
+                )
+            )
+            console.print(
+                "\n[dim]View logs:[/dim] [cyan]nativeblend worker logs[/cyan]"
+            )
+        else:
+            table.add_row("Status", "[red]✗ Not running[/red]")
+            console.print(
+                Panel(
+                    table,
+                    title="Worker Service Status",
+                    border_style="red",
+                )
+            )
+            console.print(
+                "\n[dim]Start workers:[/dim] [cyan]nativeblend worker start[/cyan]"
+            )
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to get worker status: {e}")
+        raise typer.Exit(1)
+
+
+@worker_app.command("logs")
+def worker_logs(
+    follow: bool = typer.Option(
+        False, "--follow", "-f", help="Follow log output (like tail -f)"
+    ),
+    lines: int = typer.Option(
+        50, "--lines", "-n", help="Number of lines to show from the end"
+    ),
+):
+    """View worker logs"""
+    from .worker import get_log_file_path
+    import subprocess
+
+    log_file = get_log_file_path()
+
+    if not log_file.exists():
+        console.print(
+            "[yellow]⚠[/yellow] No log file found\n"
+            "[dim]Logs will appear after starting the worker service[/dim]"
+        )
+        raise typer.Exit(0)
+
+    try:
+        if follow:
+            # Use tail -f to follow logs
+            console.print(
+                f"[dim]Following logs from {log_file}[/dim]\n"
+                "[dim]Press Ctrl+C to stop[/dim]\n"
+            )
+            subprocess.run(["tail", "-f", str(log_file)])
+        else:
+            # Show last N lines
+            result = subprocess.run(
+                ["tail", "-n", str(lines), str(log_file)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                console.print(f"[dim]Last {lines} lines from {log_file}:[/dim]\n")
+                console.print(result.stdout)
+            else:
+                console.print(f"[red]✗[/red] Failed to read log file: {result.stderr}")
+                raise typer.Exit(1)
+
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped following logs[/dim]")
+    except FileNotFoundError:
+        console.print(
+            "[red]✗[/red] 'tail' command not found\n"
+            f"[dim]View logs directly at: {log_file}[/dim]"
+        )
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to read logs: {e}")
+        raise typer.Exit(1)
