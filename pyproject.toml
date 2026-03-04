@@ -8,6 +8,19 @@ version = "0.1.0"
 description = "NativeBlend CLI - Generate 3D models in Blender using AI"
 readme = "README.md"
 requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "NativeBlend Team", email = "support@nativeblend.app"}
+]
+keywords = ["blender", "3d", "ai", "generative", "cli", "modeling"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+]
 dependencies = [
     "typer>=0.15.1",
     "keyring>=25.5.0",
@@ -17,6 +30,13 @@ dependencies = [
     "python-daemon>=3.1.0",
     "psutil>=6.1.0",
 ]
+
+[project.urls]
+Homepage = "https://nativeblend.app"
+Repository = "https://github.com/addy999/nativeblend-cli"
+Documentation = "https://nativeblend.app"
+"Issue Tracker" = "https://github.com/addy999/nativeblend-cli/issues"
+Discord = "https://discord.gg/CKKuWpfCCu"
 
 [project.scripts]
 nativeblend = "nativeblend.main:app"
