@@ -344,49 +344,24 @@ def generate(
         f"[green]✓[/green] Generation started (ID: [cyan]{generation_id}[/cyan])"
     )
 
-    # Poll for status updates
-    start_time = time.time()
-    last_progress_count = 0
+    # Stream logs in real-time via WebSocket
+    with console.status("[cyan]→[/cyan] Generating..."):
 
-    with console.status("[bold green]Generating 3D model...") as status:
-        while True:
-            status_result = client.get_generation_status(generation_id)
+        def handle_log(log_message: str):
+            """Callback for each log message"""
+            if verbose:
+                console.print(f"[dim]{log_message}[/dim]")
+            else:
+                console.print(f"[cyan]→[/cyan] {log_message}")
 
-            if not status_result:
-                console.print("[red]✗[/red] Failed to fetch generation status")
-                raise typer.Exit(1)
+        task_status = client.stream_generation_logs(generation_id, handle_log)
 
+    if not task_status:
+        console.print("[yellow]⚠[/yellow] Lost connection to log stream")
+        # Fall back to checking final status
+        status_result = client.get_generation_status(generation_id)
+        if status_result:
             task_status = status_result.get("status")
-            progress = status_result.get("progress", [])
-            elapsed = status_result.get("elapsed_time", 0)
-
-            # Show new progress messages
-            if len(progress) > last_progress_count:
-                for msg in progress[last_progress_count:]:
-                    if verbose:
-                        console.print(f"[dim]{msg}[/dim]")
-                    else:
-                        # Show abbreviated logs in non-verbose mode
-                        if any(
-                            keyword in msg.lower()
-                            for keyword in [
-                                "phase",
-                                "step",
-                                "approved",
-                                "completed",
-                                "started",
-                            ]
-                        ):
-                            console.print(f"[cyan]→[/cyan] {msg}")
-                last_progress_count = len(progress)
-
-            # Check if task is complete
-            if task_status in ["SUCCESS", "FAILURE", "REVOKED"]:
-                status.stop()
-                break
-
-            # Wait before next poll
-            time.sleep(2)
 
     # Get final result
     if task_status == "SUCCESS":

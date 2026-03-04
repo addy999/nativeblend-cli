@@ -1,5 +1,7 @@
 import requests
-from typing import Optional, Dict, Any
+import websocket
+import json
+from typing import Optional, Dict, Any, Callable
 from .config import config
 
 
@@ -205,4 +207,58 @@ class APIClient:
             else:
                 return None
         except requests.RequestException:
+            return None
+
+    def stream_generation_logs(
+        self, generation_id: str, on_log: Callable[[str], None]
+    ) -> Optional[str]:
+        """
+        Stream generation logs in real-time via WebSocket.
+
+        Args:
+            generation_id: The ID of the generation task
+            on_log: Callback function called for each log message
+
+        Returns:
+            Final status ("SUCCESS", "FAILURE", "REVOKED"), or None if failed
+        """
+        # Convert https:// to wss:// or http:// to ws://
+        ws_url = self.base_url.replace("https://", "wss://").replace("http://", "ws://")
+        ws_url = f"{ws_url}/generate/{generation_id}/logs/stream"
+
+        try:
+            # Create WebSocket connection with auth header
+            ws = websocket.create_connection(
+                ws_url,
+                header=[f"Authorization: Bearer {self.api_key}"] if self.api_key else None,
+                timeout=10,
+            )
+
+            final_status = None
+
+            # Receive messages
+            while True:
+                try:
+                    message = ws.recv()
+                    data = json.loads(message)
+
+                    if data.get("type") == "log":
+                        on_log(data.get("log", ""))
+                    elif data.get("type") == "status":
+                        final_status = data.get("status")
+                        break
+                    elif "error" in data:
+                        on_log(f"Error: {data['error']}")
+                        break
+
+                except websocket.WebSocketTimeoutException:
+                    continue
+                except websocket.WebSocketConnectionClosedException:
+                    break
+
+            ws.close()
+            return final_status
+
+        except Exception as e:
+            on_log(f"WebSocket error: {str(e)}")
             return None

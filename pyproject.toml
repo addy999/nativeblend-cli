@@ -13,6 +13,7 @@ dependencies = [
     "keyring>=25.5.0",
     "requests>=2.32.0",
     "rich>=13.9.4",
+    "websocket-client>=1.8.0",
 ]
 
 [project.scripts]
