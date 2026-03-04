@@ -2,6 +2,7 @@ import requests
 import websocket
 import json
 from typing import Optional, Dict, Any, Callable
+from urllib.parse import urljoin
 from .config import config
 
 
@@ -20,6 +21,11 @@ class APIClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
+    def _url(self, path: str) -> str:
+        """Join base URL with a path, handling trailing slashes correctly."""
+        base = self.base_url if self.base_url.endswith("/") else self.base_url + "/"
+        return urljoin(base, path.lstrip("/"))
+
     def validate_api_key(self) -> bool:
         """
         Validate API key by making a test request to the health endpoint.
@@ -27,7 +33,7 @@ class APIClient:
         """
         try:
             response = requests.get(
-                f"{self.base_url}/health",
+                self._url("health"),
                 headers=self._get_headers(),
                 timeout=10,
             )
@@ -40,7 +46,7 @@ class APIClient:
         """List pending tasks for the current user"""
         try:
             response = requests.get(
-                f"{self.base_url}/cli/tasks",
+                self._url("cli/tasks"),
                 headers=self._get_headers(),
                 timeout=self.timeout,
             )
@@ -59,7 +65,7 @@ class APIClient:
         """
         try:
             response = requests.post(
-                f"{self.base_url}/cli/tasks/{task_id}/claim",
+                self._url(f"cli/tasks/{task_id}/claim"),
                 headers=self._get_headers(),
                 timeout=self.timeout,
             )
@@ -108,7 +114,7 @@ class APIClient:
             )
 
             response = requests.post(
-                f"{self.base_url}/cli/tasks/{task_id}/complete",
+                self._url(f"cli/tasks/{task_id}/complete"),
                 headers=headers,
                 data=form_data,
                 files=files,
@@ -145,7 +151,7 @@ class APIClient:
                 payload["image_url"] = image_url
 
             response = requests.post(
-                f"{self.base_url}/generate",
+                self._url("generate"),
                 headers=self._get_headers(),
                 json=payload,
                 timeout=self.timeout,
@@ -174,7 +180,7 @@ class APIClient:
         """
         try:
             response = requests.get(
-                f"{self.base_url}/generate/{generation_id}/status",
+                self._url(f"generate/{generation_id}/status"),
                 headers=self._get_headers(),
                 timeout=self.timeout,
             )
@@ -198,7 +204,7 @@ class APIClient:
         """
         try:
             response = requests.get(
-                f"{self.base_url}/generate/{generation_id}/result",
+                self._url(f"generate/{generation_id}/result"),
                 headers=self._get_headers(),
                 timeout=self.timeout,
             )
@@ -217,7 +223,7 @@ class APIClient:
         """Cancel/revoke a generation task."""
         try:
             response = requests.delete(
-                f"{self.base_url}/generate/{generation_id}",
+                self._url(f"generate/{generation_id}"),
                 headers=self._get_headers(),
                 timeout=self.timeout,
             )
@@ -239,8 +245,11 @@ class APIClient:
             Final status ("SUCCESS", "FAILURE", "REVOKED"), or None if failed
         """
         # Convert https:// to wss:// or http:// to ws://
-        ws_url = self.base_url.replace("https://", "wss://").replace("http://", "ws://")
-        ws_url = f"{ws_url}/generate/{generation_id}/logs/stream"
+        ws_base = self.base_url.replace("https://", "wss://").replace(
+            "http://", "ws://"
+        )
+        ws_base = ws_base if ws_base.endswith("/") else ws_base + "/"
+        ws_url = urljoin(ws_base, f"generate/{generation_id}/logs/stream")
 
         try:
             # Create WebSocket connection with auth header
