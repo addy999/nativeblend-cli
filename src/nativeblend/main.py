@@ -72,11 +72,82 @@ def init():
         table.add_row("Default Output Dir", config.get("output.default_dir"))
         table.add_row("Save Renders", str(config.get("output.save_renders")))
         table.add_row("Default Mode", config.get("generation.default_mode"))
+        table.add_row("Blender Path", config.get("generation.blender_path"))
 
         console.print(table)
 
+        # Ask about starting workers
+        if typer.confirm(
+            "\nWould you like to start background workers now? Without workers, generations will not be processed. You can also start them later with 'nativeblend worker start'",
+            default=True,
+        ):
+
+            num_workers = typer.prompt(
+                "\nHow many workers would you like to start?",
+                type=int,
+                default=1,
+            )
+
+            if num_workers < 1 or num_workers > 10:
+                console.print(
+                    "[yellow]⚠[/yellow] Number of workers must be between 1 and 10. Using 1."
+                )
+                num_workers = 1
+
+            # Start workers
+            console.print(
+                f"\n[cyan]→[/cyan] Starting {num_workers} background worker(s)..."
+            )
+
+            try:
+                # Check if already running
+                if is_running():
+                    console.print("[yellow]⚠[/yellow] Workers are already running")
+                else:
+                    # Start workers via subprocess
+                    subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-c",
+                            f"from nativeblend.worker import start_worker; start_worker({num_workers}, 5)",
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+
+                    # Give it a moment to start
+                    time.sleep(1.5)
+
+                    # Verify it started
+                    if is_running():
+                        pid = get_pid()
+                        console.print(
+                            f"\n[green]✓[/green] Workers started successfully (PID: {pid})"
+                        )
+                        console.print(
+                            f"[dim]View logs:[/dim] [cyan]nativeblend worker logs[/cyan]"
+                        )
+                        console.print(
+                            f"[dim]Check status:[/dim] [cyan]nativeblend worker status[/cyan]"
+                        )
+                    else:
+                        console.print(
+                            "[yellow]⚠[/yellow] Workers may have failed to start"
+                        )
+                        console.print(
+                            "[dim]Check logs with:[/dim] [cyan]nativeblend worker logs[/cyan]"
+                        )
+
+            except Exception as e:
+                console.print(f"[red]✗[/red] Failed to start workers: {e}")
+        else:
+            console.print(
+                "\n[dim]You can start workers later with:[/dim] [cyan]nativeblend worker start[/cyan]"
+            )
+
         console.print(
-            "\n[dim]Run 'nativeblend auth login' to authenticate with your API key[/dim]"
+            "\n[green]✓[/green]Run 'nativeblend auth login' to authenticate with your API key"
         )
 
     except Exception as e:
