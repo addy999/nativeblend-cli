@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Optional, Any
 import keyring
@@ -64,7 +65,7 @@ class Config:
                 "timeout": 300,
             },
             "output": {
-                "default_dir": "./outputs",
+                "default_dir": os.path.abspath("./outputs"),
                 "save_renders": True,
             },
             "generation": {
@@ -108,6 +109,7 @@ class Config:
                 return default
         return value if value is not None else default
 
+    # TODO: If setting output dir, assert that it is an abs path and create it if it doesn't exist.
     def set(self, key: str, value: Any) -> None:
         """Set a configuration value using dot notation (e.g., 'api.endpoint')"""
         keys = key.split(".")

@@ -135,7 +135,7 @@ class WorkerDaemon:
 
     def setup_logging(self):
         """Setup logging - must be called after daemonization"""
-        self.logger.setLevel(logging.DEBUG)
+        self.logger.setLevel(logging.INFO)
         self.logger.handlers.clear()
 
         # Add rotating file handler (10MB max, keep 3 backups)
@@ -177,6 +177,9 @@ class WorkerDaemon:
 
         code = task_data.get("code", "")
         artifact_path = task_data.get("artifact_path", "")
+        generation: str = task_data.get("generation", "")
+        assert generation, "Generation ID is required in task data"
+
         self.stats.increment_in_progress()
         self.logger.info(f"Executing Blender script for task {task_id}")
 
@@ -184,9 +187,9 @@ class WorkerDaemon:
             # Replace artifact_path with a local path
             if artifact_path:
                 filename = os.path.basename(artifact_path)
-                new_artifact_path = os.path.join(
-                    config.get("output.default_dir"), task_id, filename
-                )
+                new_artifact_path = os.path.abspath(
+                    os.path.join(config.get("output.default_dir"), generation, filename)
+                )  # need abs path here because `worker` runs in a different working directory after daemonization
 
                 result = run_blender_script_local(
                     code.replace(artifact_path, new_artifact_path),
@@ -243,12 +246,26 @@ class WorkerDaemon:
                 if result.get("artifact_path") and os.path.exists(
                     result["artifact_path"]
                 ):
+                    is_image = (
+                        result["artifact_path"]
+                        .lower()
+                        .endswith((".png", ".jpg", ".jpeg"))
+                        and "behind" not in result["artifact_path"].lower()
+                    )  # crude check for renders vs model files
+
+                    # Remove images unless we're saving them
+                    if is_image and config.get("output.save_renders"):
+                        self.logger.info(
+                            f"Saving file for task {task_id} at {result['artifact_path']}"
+                        )
+                        return
+
+                    # Else, remove artifact
                     try:
                         os.remove(result["artifact_path"])
-                        self.logger.debug(f"Deleted artifact file for task {task_id}")
                     except Exception as cleanup_error:
                         self.logger.warning(
-                            f"Failed to delete artifact file for task {task_id}: {cleanup_error}"
+                            f"Failed to delete image for task {task_id}: {cleanup_error}"
                         )
 
         except Exception as e:
@@ -297,7 +314,6 @@ class WorkerDaemon:
             poll_count = 0
             self.logger.info("Entering main polling loop")
             while self.running:
-                self.logger.debug(f"Top of while loop, self.running={self.running}")
                 try:
                     poll_count += 1
                     self.logger.info(f"=== Starting poll iteration #{poll_count} ===")
@@ -305,9 +321,6 @@ class WorkerDaemon:
                     # Get pending tasks
                     self.logger.debug("Polling for pending tasks...")
                     tasks = self.api_client.list_pending_tasks()
-                    self.logger.debug(
-                        f"Received response from API: {len(tasks) if tasks else 0} tasks"
-                    )
 
                     if tasks and len(tasks) > 0:
                         self.logger.info(f"Found {len(tasks)} pending task(s)")
@@ -319,17 +332,11 @@ class WorkerDaemon:
                                 break
                             future = self.executor.submit(self.process_task, task)
                             self.futures.add(future)
-                            self.logger.debug(
-                                f"Submitted task {task.get('id')} to executor"
-                            )
 
                         # Clean up completed futures
-                        completed_count = len([f for f in self.futures if f.done()])
+                        # completed_count = len([f for f in self.futures if f.done()])
                         self.futures = {f for f in self.futures if not f.done()}
-                        if completed_count > 0:
-                            self.logger.debug(
-                                f"Cleaned up {completed_count} completed futures"
-                            )
+
                     else:
                         self.logger.debug("No pending tasks found")
 
