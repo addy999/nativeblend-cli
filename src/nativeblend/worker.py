@@ -252,9 +252,12 @@ class WorkerDaemon:
                         .endswith((".png", ".jpg", ".jpeg"))
                         and "behind" not in result["artifact_path"].lower()
                     )  # crude check for renders vs model files
+                    is_blend_file = result["artifact_path"].lower().endswith(".blend")
 
                     # Remove images unless we're saving them
-                    if is_image and config.get("output.save_renders"):
+                    if is_blend_file or (
+                        is_image and config.get("output.save_renders")
+                    ):
                         self.logger.info(
                             f"Saving file for task {task_id} at {result['artifact_path']}"
                         )
