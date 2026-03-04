@@ -4,14 +4,18 @@ import os
 import sys
 import time
 import json
+import signal
 import threading
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime
-from pyservice import Service
 import logging
 from logging.handlers import RotatingFileHandler
+import daemon
+from daemon.pidfile import TimeoutPIDLockFile
+import psutil
+import threading
 
 # Add the parent directory to the path to import executor
 cli_root = Path(__file__).parent.parent.parent
@@ -27,6 +31,7 @@ WORKER_DIR = Path.home() / ".nativeblend" / "workers"
 WORKER_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = WORKER_DIR / "worker.log"
 STATUS_FILE = WORKER_DIR / "status.json"
+PID_FILE = WORKER_DIR / "worker.pid"
 
 
 class WorkerStats:
@@ -45,22 +50,40 @@ class WorkerStats:
             self.start_time = datetime.now()
 
     def increment_completed(self):
-        with self.lock:
+        acquired = self.lock.acquire(timeout=2.0)
+        if not acquired:
+            return
+        try:
             self.tasks_completed += 1
             self.tasks_in_progress -= 1
+        finally:
+            self.lock.release()
 
     def increment_failed(self):
-        with self.lock:
+        acquired = self.lock.acquire(timeout=2.0)
+        if not acquired:
+            return
+        try:
             self.tasks_failed += 1
             self.tasks_in_progress -= 1
+        finally:
+            self.lock.release()
 
     def increment_in_progress(self):
-        with self.lock:
+        acquired = self.lock.acquire(timeout=2.0)
+        if not acquired:
+            return
+        try:
             self.tasks_in_progress += 1
+        finally:
+            self.lock.release()
 
     def get_stats(self):
-        with self.lock:
-            return {
+        acquired = self.lock.acquire(timeout=2.0)
+        if not acquired:
+            return {}
+        try:
+            result = {
                 "completed": self.tasks_completed,
                 "failed": self.tasks_failed,
                 "in_progress": self.tasks_in_progress,
@@ -71,58 +94,63 @@ class WorkerStats:
                     else 0
                 ),
             }
+            return result
+        finally:
+            self.lock.release()
 
     def save_to_file(self):
         """Save stats to file for status command"""
+
+        caller = threading.current_thread().name
         try:
-            with self.lock:
+            # Use timeout to detect deadlocks
+            acquired = self.lock.acquire(timeout=2.0)
+            if not acquired:
+                # Failed to acquire lock - potential deadlock
+                return
+            try:
                 stats = self.get_stats()
                 with open(STATUS_FILE, "w") as f:
                     json.dump(stats, f, indent=2)
+            finally:
+                self.lock.release()
         except Exception:
             pass  # Ignore errors writing status file
 
 
-class WorkerService(Service):
-    """Background service that executes Blender tasks"""
+class WorkerDaemon:
+    """Background daemon that executes Blender tasks"""
 
-    def __init__(self, num_workers: int = 1, poll_interval: int = 5, *args, **kwargs):
-        # Initialize parent with service name and PID directory
-        super().__init__("nativeblend-worker", pid_dir=str(WORKER_DIR), *args, **kwargs)
+    blender_path: str
 
+    def __init__(self, num_workers: int = 1, poll_interval: int = 5):
         self.num_workers = num_workers
         self.poll_interval = poll_interval
         self.executor: Optional[ThreadPoolExecutor] = None
-        self.api_client = None  # Will be initialized in run()
+        self.api_client = APIClient()
         self.stats = WorkerStats()
         self.futures: set[Future] = set()
-        self.blender_path = None
+        self.running = False
+        self.logger = logging.getLogger("nativeblend-worker")
 
-        # Configure logging to file
-        self.logger.setLevel(logging.INFO)
-
-        # Remove any existing handlers
+    def setup_logging(self):
+        """Setup logging - must be called after daemonization"""
+        self.logger.setLevel(logging.DEBUG)
         self.logger.handlers.clear()
 
         # Add rotating file handler (10MB max, keep 3 backups)
         file_handler = RotatingFileHandler(
             LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3
         )
-        file_handler.setLevel(logging.INFO)
+        file_handler.setLevel(logging.DEBUG)
         formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
 
-        # Preserve the log file when daemonizing
-        self.files_preserve = [file_handler.stream]
-
     def setup_environment(self):
-        """Setup worker environment (called in daemon process)"""
-        # Initialize API client (must be done in daemon process)
-        self.api_client = APIClient()
-
+        """Setup worker environment"""
         # Get Blender path
         self.blender_path = config.get_blender_path()
         if not self.blender_path:
@@ -153,7 +181,7 @@ class WorkerService(Service):
         self.logger.info(f"Executing Blender script for task {task_id}")
 
         try:
-            # Replace artifact_path with a local path instead of the API path
+            # Replace artifact_path with a local path
             if artifact_path:
                 filename = os.path.basename(artifact_path)
                 new_artifact_path = os.path.join(
@@ -173,7 +201,7 @@ class WorkerService(Service):
                     blender_path=self.blender_path,
                 )
 
-            # Determine status and collect fields
+            # Determine status
             task_status = "failed" if result.get("error") else "completed"
             task_output = result.get("output", "")
             task_error = result.get("error")
@@ -183,97 +211,236 @@ class WorkerService(Service):
             else:
                 self.logger.info(f"Task {task_id} completed successfully")
 
-            self.logger.info(f"Artifact path: {result.get('artifact_path')}")
-
+            # Submit the result with artifact
             artifact_file = None
-            if result.get("artifact_path"):
-                artifact_file = open(result["artifact_path"], "rb")
+            try:
+                if result.get("artifact_path"):
+                    artifact_file = open(result["artifact_path"], "rb")
 
-            # Submit the result
-            if self.api_client.completed(
-                task_id,
-                status=task_status,
-                output=task_output,
-                error=task_error,
-                artifact=artifact_file,
-            ):
-                self.stats.increment_completed()
-            else:
-                self.logger.error(f"Failed to submit result for task {task_id}")
-                self.stats.increment_failed()
+                # Submit the result
+                if self.api_client.completed(
+                    task_id,
+                    status=task_status,
+                    output=task_output,
+                    error=task_error,
+                    artifact=artifact_file,
+                ):
+                    self.stats.increment_completed()
+                    self.logger.info(
+                        f"Successfully submitted result for task {task_id}"
+                    )
+                else:
+                    self.logger.error(f"Failed to submit result for task {task_id}")
+                    self.stats.increment_failed()
 
-            # Cleanup after upload
-            if result.get("artifact_path") and os.path.exists(result["artifact_path"]):
-                os.remove(result["artifact_path"])
+            finally:
+                # Always close the file handle
+                if artifact_file:
+                    artifact_file.close()
+                    self.logger.debug(f"Closed artifact file for task {task_id}")
+
+                # Cleanup artifact file
+                if result.get("artifact_path") and os.path.exists(
+                    result["artifact_path"]
+                ):
+                    try:
+                        os.remove(result["artifact_path"])
+                        self.logger.debug(f"Deleted artifact file for task {task_id}")
+                    except Exception as cleanup_error:
+                        self.logger.warning(
+                            f"Failed to delete artifact file for task {task_id}: {cleanup_error}"
+                        )
 
         except Exception as e:
-            self.logger.error(f"Error processing task {task_id}: {e}")
-            self.api_client.completed(task_id, status="failed", error=str(e))
-            self.stats.increment_failed()
+            self.logger.error(f"Error processing task {task_id}: {e}", exc_info=True)
+            try:
+                self.api_client.completed(task_id, status="failed", error=str(e))
+                self.stats.increment_failed()
+            except Exception as submit_error:
+                self.logger.error(
+                    f"Failed to submit error status for task {task_id}: {submit_error}",
+                    exc_info=True,
+                )
+                self.stats.increment_failed()
         finally:
-            # Save stats after each task
             self.stats.save_to_file()
+            self.logger.debug(f"Finished processing task {task_id}")
+
+    def handle_sigterm(self, signum, frame):
+        """Handle SIGTERM signal"""
+        self.logger.info("Received SIGTERM, shutting down...")
+        self.running = False
 
     def run(self):
-        """Main daemon loop - polls for tasks and executes them"""
+        """Main daemon loop"""
         try:
-            # Setup environment in daemon process
+            # Setup logging first (after daemonization)
+            self.setup_logging()
+
+            # Setup signal handler
+            signal.signal(signal.SIGTERM, self.handle_sigterm)
+
+            # Setup environment
             self.setup_environment()
 
             self.stats.start()
+            self.running = True
             self.logger.info(
-                f"Worker service started with {self.num_workers} worker(s), "
+                f"Worker daemon started with {self.num_workers} worker(s), "
                 f"poll interval: {self.poll_interval}s"
             )
 
-            # Create thread pool for executing tasks
+            # Create thread pool
             self.executor = ThreadPoolExecutor(max_workers=self.num_workers)
 
             # Main polling loop
-            while not self.got_sigterm():
+            poll_count = 0
+            self.logger.info("Entering main polling loop")
+            while self.running:
+                self.logger.debug(f"Top of while loop, self.running={self.running}")
                 try:
+                    poll_count += 1
+                    self.logger.info(f"=== Starting poll iteration #{poll_count} ===")
+
                     # Get pending tasks
+                    self.logger.debug("Polling for pending tasks...")
                     tasks = self.api_client.list_pending_tasks()
+                    self.logger.debug(
+                        f"Received response from API: {len(tasks) if tasks else 0} tasks"
+                    )
 
                     if tasks and len(tasks) > 0:
                         self.logger.info(f"Found {len(tasks)} pending task(s)")
 
                         # Submit tasks to executor
                         for task in tasks:
-                            if self.got_sigterm():
+                            if not self.running:
+                                self.logger.warning("Stopping - self.running is False")
                                 break
                             future = self.executor.submit(self.process_task, task)
                             self.futures.add(future)
+                            self.logger.debug(
+                                f"Submitted task {task.get('id')} to executor"
+                            )
 
                         # Clean up completed futures
+                        completed_count = len([f for f in self.futures if f.done()])
                         self.futures = {f for f in self.futures if not f.done()}
+                        if completed_count > 0:
+                            self.logger.debug(
+                                f"Cleaned up {completed_count} completed futures"
+                            )
+                    else:
+                        self.logger.debug("No pending tasks found")
 
                     # Wait before polling again
-                    time.sleep(self.poll_interval)
+                    self.logger.info(f"About to sleep for {self.poll_interval}s")
+                    try:
+                        time.sleep(self.poll_interval)
+                        self.logger.info(f"Woke up from sleep normally")
+                    except InterruptedError as ie:
+                        self.logger.warning(f"Sleep interrupted: {ie}")
+                    except Exception as sleep_error:
+                        self.logger.error(
+                            f"Unexpected error during sleep: {sleep_error}",
+                            exc_info=True,
+                        )
 
-                    # Update status file periodically
                     self.stats.save_to_file()
+                    self.logger.info(f"=== Completed poll iteration #{poll_count} ===")
 
                 except Exception as e:
-                    self.logger.error(f"Error in polling loop: {e}")
+                    self.logger.error(f"Error in polling loop: {e}", exc_info=True)
+                    self.logger.info(f"Sleeping {self.poll_interval}s after exception")
                     time.sleep(self.poll_interval)
+                    self.logger.info("Woke up from exception sleep")
 
         except Exception as e:
-            self.logger.error(f"Fatal error in worker service: {e}")
+            self.logger.error(f"Fatal error in worker daemon: {e}")
             raise
         finally:
             # Cleanup
-            self.logger.info("Worker service shutting down")
+            self.logger.info("Worker daemon shutting down")
             if self.executor:
                 self.logger.info("Waiting for tasks to complete...")
                 self.executor.shutdown(wait=True)
             self.stats.save_to_file()
-            self.logger.info("Worker service stopped")
+            self.logger.info("Worker daemon stopped")
 
 
-def get_worker_service(num_workers: int = 1, poll_interval: int = 5) -> WorkerService:
-    """Factory function to create a worker service instance"""
-    return WorkerService(num_workers=num_workers, poll_interval=poll_interval)
+def start_worker(num_workers: int = 1, poll_interval: int = 5):
+    """Start worker daemon in background"""
+
+    if is_running():
+        raise RuntimeError("Worker is already running")
+
+    # Create daemon context
+    pidfile = TimeoutPIDLockFile(PID_FILE, timeout=3)
+
+    context = daemon.DaemonContext(
+        pidfile=pidfile,
+        working_directory=str(WORKER_DIR),
+        files_preserve=[],  # set after creating worker
+        detach_process=True,
+    )
+
+    # create worker inside the context to avoid FD issues
+    with context:
+        worker = WorkerDaemon(num_workers=num_workers, poll_interval=poll_interval)
+        worker.run()
+
+
+def stop_worker():
+    """Stop running worker daemon"""
+    if not is_running():
+        raise RuntimeError("Worker is not running")
+
+    pid = get_pid()
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            # wait for process to stop, up to 10 seconds
+            for _ in range(50):
+                if not is_running():
+                    break
+                time.sleep(0.2)
+        except ProcessLookupError:
+            pass  # already stopped
+        finally:
+            if PID_FILE.exists():
+                PID_FILE.unlink()
+
+
+def is_running() -> bool:
+    """Check if worker daemon is running"""
+    if not PID_FILE.exists():
+        return False
+
+    try:
+        pid = get_pid()
+        if pid is None:
+            return False
+
+        try:
+            process = psutil.Process(pid)
+            return process.is_running() and "python" in process.name().lower()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
+    except Exception:
+        return False
+
+
+def get_pid() -> Optional[int]:
+    """Get worker daemon PID"""
+    if not PID_FILE.exists():
+        return None
+
+    try:
+        with open(PID_FILE, "r") as f:
+            content = f.read().strip()
+            return int(content) if content else None
+    except Exception:
+        return None
 
 
 def get_log_file_path() -> Path:

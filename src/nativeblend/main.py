@@ -4,12 +4,21 @@ NativeBlend CLI - Generate 3D models in Blender using natural language prompts
 """
 
 import typer
+import sys
+import time
+import subprocess
+import base64
+import mimetypes
+from pathlib import Path as FilePath
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+import json as json_lib
 from typing import Optional
 from .config import config
 from .api_client import APIClient
+from .worker import stop_worker, is_running, get_pid, get_log_file_path, load_status
+from datetime import datetime, timedelta
 
 # Initialize console for rich output
 console = Console()
@@ -235,7 +244,6 @@ def config_set(key: str, value: str):
     """
     try:
         # Try to parse as JSON for booleans/numbers
-        import json as json_lib
 
         try:
             parsed_value = json_lib.loads(value)
@@ -279,10 +287,6 @@ def generate(
         nativeblend generate "a racing car" --mode pro
         nativeblend generate "a spaceship" --image reference.jpg
     """
-    import time
-    import base64
-    import mimetypes
-    from pathlib import Path as FilePath
 
     # Check authentication
     api_key = config.get_api_key()
@@ -431,7 +435,6 @@ def worker_start(
     Start background workers to execute Blender tasks.
     Workers will run in the background and poll for pending tasks.
     """
-    from .worker import get_worker_service
 
     # Check authentication
     api_key = config.get_api_key()
@@ -442,14 +445,12 @@ def worker_start(
         raise typer.Exit(1)
 
     try:
-        # Create worker service
-        service = get_worker_service(num_workers=workers, poll_interval=poll_interval)
-
         # Check if already running
-        if service.is_running():
+        if is_running():
+            pid = get_pid()
             console.print("[yellow]⚠[/yellow] Worker service is already running")
             console.print(
-                f"[dim]PID: {service.get_pid()}[/dim]\n"
+                f"[dim]PID: {pid}[/dim]\n"
                 "[dim]Run 'nativeblend worker stop' to stop it first[/dim]"
             )
             raise typer.Exit(1)
@@ -458,20 +459,33 @@ def worker_start(
         console.print(
             f"[cyan]→[/cyan] Starting worker service with {workers} worker(s)..."
         )
-        service.start()
+
+        # Fork to start daemon in background
+
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                f"from nativeblend.worker import start_worker; start_worker({workers}, {poll_interval})",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        # Give it a moment to start
+
+        time.sleep(1.5)
 
         # Verify it started
-        import time
-
-        time.sleep(1)  # Give it a moment to start
-
-        if service.is_running():
+        if is_running():
+            pid = get_pid()
             console.print(
                 Panel(
                     f"[bold green]✓ Worker service started successfully![/bold green]\n\n"
                     f"[bold]Workers:[/bold] {workers}\n"
                     f"[bold]Poll interval:[/bold] {poll_interval}s\n"
-                    f"[bold]PID:[/bold] {service.get_pid()}\n\n"
+                    f"[bold]PID:[/bold] {pid}\n\n"
                     f"[dim]View logs:[/dim] [cyan]nativeblend worker logs[/cyan]\n"
                     f"[dim]Check status:[/dim] [cyan]nativeblend worker status[/cyan]\n"
                     f"[dim]Stop workers:[/dim] [cyan]nativeblend worker stop[/cyan]",
@@ -486,6 +500,9 @@ def worker_start(
             )
             raise typer.Exit(1)
 
+    except RuntimeError as e:
+        console.print(f"[red]✗[/red] {e}")
+        raise typer.Exit(1)
     except ValueError as e:
         console.print(f"[red]✗[/red] Configuration error: {e}")
         raise typer.Exit(1)
@@ -507,20 +524,17 @@ def worker_start(
 @worker_app.command("stop")
 def worker_stop():
     """Stop running worker service"""
-    from .worker import get_worker_service
 
     try:
-        service = get_worker_service()
-
-        if not service.is_running():
+        if not is_running():
             console.print("[yellow]⚠[/yellow] Worker service is not running")
             raise typer.Exit(0)
 
         console.print("[cyan]→[/cyan] Stopping worker service...")
-        pid = service.get_pid()
+        pid = get_pid()
 
-        # Stop the service (sends SIGTERM)
-        service.stop()
+        # Stop the service
+        stop_worker()
 
         console.print(
             Panel(
@@ -532,6 +546,9 @@ def worker_stop():
             )
         )
 
+    except RuntimeError as e:
+        console.print(f"[red]✗[/red] {e}")
+        raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]✗[/red] Failed to stop workers: {e}")
         raise typer.Exit(1)
@@ -540,20 +557,17 @@ def worker_stop():
 @worker_app.command("status")
 def worker_status():
     """Show worker status and statistics"""
-    from .worker import get_worker_service, load_status
-    from datetime import datetime, timedelta
 
     try:
-        service = get_worker_service()
-        is_running = service.is_running()
+        running = is_running()
 
         # Create status table
         table = Table(show_header=False, box=None, padding=(0, 2))
         table.add_column("", style="bold")
         table.add_column("")
 
-        if is_running:
-            pid = service.get_pid()
+        if running:
+            pid = get_pid()
             table.add_row("Status", "[green]✓ Running[/green]")
             table.add_row("PID", str(pid))
 
@@ -611,8 +625,6 @@ def worker_logs(
     ),
 ):
     """View worker logs"""
-    from .worker import get_log_file_path
-    import subprocess
 
     log_file = get_log_file_path()
 
