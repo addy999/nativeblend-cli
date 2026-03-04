@@ -209,6 +209,18 @@ class APIClient:
         except requests.RequestException:
             return None
 
+    def cancel_generation(self, generation_id: str) -> bool:
+        """Cancel/revoke a generation task."""
+        try:
+            response = requests.delete(
+                f"{self.base_url}/generate/{generation_id}",
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+            return response.status_code == 200
+        except requests.RequestException:
+            return False
+
     def stream_generation_logs(
         self, generation_id: str, on_log: Callable[[str], None]
     ) -> Optional[str]:

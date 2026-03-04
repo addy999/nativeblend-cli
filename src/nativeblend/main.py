@@ -344,24 +344,38 @@ def generate(
         f"[green]✓[/green] Generation started (ID: [cyan]{generation_id}[/cyan])"
     )
 
-    # Stream logs in real-time via WebSocket
-    with console.status("[cyan]→[/cyan] Generating..."):
+    try:
+        # Stream logs in real-time via WebSocket
+        with console.status("[cyan]→[/cyan] Generating..."):
 
-        def handle_log(log_message: str):
-            """Callback for each log message"""
-            if verbose:
-                console.print(f"[dim]{log_message}[/dim]")
-            else:
-                console.print(f"[cyan]→[/cyan] {log_message}")
+            def handle_log(log_message: str):
+                """Callback for each log message"""
+                if verbose:
+                    console.print(f"[dim]{log_message}[/dim]")
+                else:
+                    console.print(f"[cyan]→[/cyan] {log_message}")
 
-        task_status = client.stream_generation_logs(generation_id, handle_log)
+            task_status = client.stream_generation_logs(generation_id, handle_log)
 
-    if not task_status:
-        console.print("[yellow]⚠[/yellow] Lost connection to log stream")
-        # Fall back to checking final status
-        status_result = client.get_generation_status(generation_id)
-        if status_result:
-            task_status = status_result.get("status")
+        if not task_status:
+            console.print("[yellow]⚠[/yellow] Lost connection to log stream")
+            # Fall back to checking final status
+            status_result = client.get_generation_status(generation_id)
+            if status_result:
+                task_status = status_result.get("status")
+
+    except KeyboardInterrupt:
+        console.print(
+            f"\n[yellow]⚠[/yellow] Cancelling generation [cyan]{generation_id}[/cyan]..."
+        )
+        cancelled = client.cancel_generation(generation_id)
+        if cancelled:
+            console.print(
+                f"[yellow]⚠[/yellow] Generation [cyan]{generation_id}[/cyan] has been revoked"
+            )
+        else:
+            console.print(f"[red]✗[/red] Failed to revoke generation {generation_id}")
+        raise typer.Exit(1)
 
     # Get final result
     if task_status == "SUCCESS":
