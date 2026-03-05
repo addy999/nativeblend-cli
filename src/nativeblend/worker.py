@@ -123,11 +123,16 @@ class WorkerDaemon:
 
     blender_path: str
 
-    def __init__(self, num_workers: int = 1, poll_interval: int = 5):
+    def __init__(
+        self,
+        num_workers: int = 1,
+        poll_interval: int = 5,
+        api_key: Optional[str] = None,
+    ):
         self.num_workers = num_workers
         self.poll_interval = poll_interval
         self.executor: Optional[ThreadPoolExecutor] = None
-        self.api_client = APIClient()
+        self.api_client = APIClient(api_key=api_key)
         self.stats = WorkerStats()
         self.futures: set[Future] = set()
         self.running = False
@@ -384,6 +389,13 @@ def start_worker(num_workers: int = 1, poll_interval: int = 5):
     if is_running():
         raise RuntimeError("Worker is already running")
 
+    # Retrieve API key BEFORE daemonization (cause keyring won't be accessible after)
+    api_key = config.get_api_key()
+    if not api_key:
+        raise ValueError(
+            "No API key found. Please authenticate first with: nativeblend auth login"
+        )
+
     # Create daemon context
     pidfile = TimeoutPIDLockFile(PID_FILE, timeout=3)
 
@@ -396,7 +408,9 @@ def start_worker(num_workers: int = 1, poll_interval: int = 5):
 
     # create worker inside the context to avoid FD issues
     with context:
-        worker = WorkerDaemon(num_workers=num_workers, poll_interval=poll_interval)
+        worker = WorkerDaemon(
+            num_workers=num_workers, poll_interval=poll_interval, api_key=api_key
+        )
         worker.run()
 
 

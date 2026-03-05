@@ -4,14 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nativeblend"
-version = "0.1.0"
+version = "0.1.1"
 description = "NativeBlend CLI - Generate 3D models in Blender using AI"
 readme = "README.md"
 requires-python = ">=3.12"
-license = {text = "MIT"}
-authors = [
-    {name = "NativeBlend Team", email = "support@nativeblend.app"}
-]
+license = { text = "MIT" }
+authors = [{ name = "NativeBlend Team", email = "support@nativeblend.app" }]
 keywords = ["blender", "3d", "ai", "generative", "cli", "modeling"]
 classifiers = [
     "Development Status :: 4 - Beta",
