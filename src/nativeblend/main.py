@@ -388,7 +388,9 @@ def generate(
 
     def execute_task_inline(task: dict) -> None:
         """Execute a single Blender task inline."""
+
         task_id = task.get("id")
+        assert task_id, "Task must have an ID"
 
         # Claim the task
         task_data = client.claim_task(task_id)
