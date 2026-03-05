@@ -6,9 +6,6 @@ NativeBlend CLI - Generate 3D models in Blender using natural language prompts
 import os
 
 import typer
-import sys
-import time
-import subprocess
 import base64
 import mimetypes
 from pathlib import Path as FilePath
@@ -19,8 +16,7 @@ import json as json_lib
 from typing import Optional
 from .config import config
 from .api_client import APIClient
-from .worker import stop_worker, is_running, get_pid, get_log_file_path, load_status
-from datetime import datetime, timedelta
+from .executor import run_blender_script_local
 
 # Initialize console for rich output
 console = Console()
@@ -39,10 +35,6 @@ app.add_typer(auth_app, name="auth")
 # Config subcommand group
 config_app = typer.Typer(help="Manage configuration settings")
 app.add_typer(config_app, name="config")
-
-# Worker subcommand group
-worker_app = typer.Typer(help="Manage background workers for task execution")
-app.add_typer(worker_app, name="worker")
 
 
 @app.callback()
@@ -77,76 +69,6 @@ def init():
         table.add_row("Blender Path", config.get("generation.blender_path"))
 
         console.print(table)
-
-        # Ask about starting workers
-        if typer.confirm(
-            "\nWould you like to start background workers now? Without workers, generations will not be processed. You can also start them later with 'nativeblend worker start'",
-            default=True,
-        ):
-
-            num_workers = typer.prompt(
-                "\nHow many workers would you like to start?",
-                type=int,
-                default=1,
-            )
-
-            if num_workers < 1 or num_workers > 10:
-                console.print(
-                    "[yellow]⚠[/yellow] Number of workers must be between 1 and 10. Using 1."
-                )
-                num_workers = 1
-
-            # Start workers
-            console.print(
-                f"\n[cyan]→[/cyan] Starting {num_workers} background worker(s)..."
-            )
-
-            try:
-                # Check if already running
-                if is_running():
-                    console.print("[yellow]⚠[/yellow] Workers are already running")
-                else:
-                    # Start workers via subprocess
-                    subprocess.Popen(
-                        [
-                            sys.executable,
-                            "-c",
-                            f"from nativeblend.worker import start_worker; start_worker({num_workers}, 5)",
-                        ],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
-                    )
-
-                    # Give it a moment to start
-                    time.sleep(1.5)
-
-                    # Verify it started
-                    if is_running():
-                        pid = get_pid()
-                        console.print(
-                            f"\n[green]✓[/green] Workers started successfully (PID: {pid})"
-                        )
-                        console.print(
-                            f"[dim]View logs:[/dim] [cyan]nativeblend worker logs[/cyan]"
-                        )
-                        console.print(
-                            f"[dim]Check status:[/dim] [cyan]nativeblend worker status[/cyan]"
-                        )
-                    else:
-                        console.print(
-                            "[yellow]⚠[/yellow] Workers may have failed to start"
-                        )
-                        console.print(
-                            "[dim]Check logs with:[/dim] [cyan]nativeblend worker logs[/cyan]"
-                        )
-
-            except Exception as e:
-                console.print(f"[red]✗[/red] Failed to start workers: {e}")
-        else:
-            console.print(
-                "\n[dim]You can start workers later with:[/dim] [cyan]nativeblend worker start[/cyan]"
-            )
 
         console.print(
             "\n[green]✓[/green]Run 'nativeblend auth login' to authenticate with your API key"
@@ -369,6 +291,29 @@ def generate(
         )
         raise typer.Exit(1)
 
+    # Test blender
+    if not os.path.exists(config.get_blender_path()):
+        console.print(
+            f"[red]✗[/red] Blender executable not found at: {config.get_blender_path()}"
+        )
+        console.print(
+            "[dim]Please set the correct path to your Blender executable using 'nativeblend config set generation.blender_path /path/to/blender'[/dim]"
+        )
+        raise typer.Exit(1)
+
+    result = run_blender_script_local(
+        'import bpy; print("Blender is working")',
+        blender_path=config.get_blender_path(),
+        timeout=10,
+    )
+    if "error" in result:
+        console.print(f"[red]✗[/red] Failed to test Blender: {result['error']}")
+        console.print(
+            "[dim]Please ensure Blender is properly installed and the path is correct[/dim]"
+        )
+        raise typer.Exit(1)
+
+    # Now, let's generate.
     # Use default mode from config if not specified
     if not mode:
         mode = config.get("generation.default_mode", "standard")
@@ -426,6 +371,128 @@ def generate(
     )
     os.makedirs(output_path, exist_ok=True)
 
+    # Inline task execution: check for and run Blender tasks during log streaming
+    blender_path = config.get_blender_path()
+
+    def _describe_task(artifact_path: str) -> str:
+        """Return a human-friendly label based on the artifact file extension."""
+        if not artifact_path:
+            return "Processing in Blender"
+        lower = artifact_path.lower()
+        if lower.endswith(".glb") or lower.endswith(".gltf"):
+            return "Exporting model"
+        if lower.endswith(".blend"):
+            return "Saving Blender file"
+        if lower.endswith((".png", ".jpg", ".jpeg")):
+            return "Rendering preview"
+        return "Processing in Blender"
+
+    def execute_task_inline(task: dict) -> None:
+        """Execute a single Blender task inline."""
+        task_id = task.get("id")
+
+        # Claim the task
+        task_data = client.claim_task(task_id)
+        if not task_data:
+            console.print(f"[yellow]⚠[/yellow] Failed to claim task")
+            return
+
+        code = task_data.get("code", "")
+        artifact_path = task_data.get("artifact_path", "")
+        generation = task_data.get("generation", "")
+
+        if not generation:
+            console.print(f"[yellow]⚠[/yellow] Skipping task — missing generation ID")
+            return
+
+        label = _describe_task(artifact_path)
+        console.print(f"[cyan]→[/cyan] {label}...")
+
+        try:
+            # Replace artifact_path with a local path
+            if artifact_path:
+                filename = os.path.basename(artifact_path)
+                new_artifact_path = os.path.abspath(
+                    os.path.join(config.get("output.default_dir"), generation, filename)
+                )
+                result = run_blender_script_local(
+                    code.replace(artifact_path, new_artifact_path),
+                    timeout=120,
+                    blender_path=blender_path,
+                    artifact_path=new_artifact_path,
+                )
+            else:
+                result = run_blender_script_local(
+                    code,
+                    timeout=120,
+                    blender_path=blender_path,
+                )
+
+            task_status_str = "failed" if result.get("error") else "completed"
+            task_output = result.get("output", "")
+            task_error = result.get("error")
+
+            if task_error:
+                console.print(f"[yellow]⚠[/yellow] {label} failed: {task_error}")
+            else:
+                console.print(f"[green]✓[/green] {label} done")
+
+            # Upload result with artifact
+            artifact_file = None
+            try:
+                if result.get("artifact_path"):
+                    artifact_file = open(result["artifact_path"], "rb")
+
+                client.completed(
+                    task_id,
+                    status=task_status_str,
+                    output=task_output,
+                    error=task_error,
+                    artifact=artifact_file,
+                )
+            finally:
+                if artifact_file:
+                    artifact_file.close()
+
+                # Cleanup artifact file (keep .blend files and saved renders)
+                if result.get("artifact_path") and os.path.exists(
+                    result["artifact_path"]
+                ):
+                    is_image = (
+                        result["artifact_path"]
+                        .lower()
+                        .endswith((".png", ".jpg", ".jpeg"))
+                        and "behind" not in result["artifact_path"].lower()
+                    )
+                    is_blend_file = result["artifact_path"].lower().endswith(".blend")
+
+                    if is_blend_file or (
+                        is_image and config.get("output.save_renders")
+                    ):
+                        return
+
+                    try:
+                        os.remove(result["artifact_path"])
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            console.print(f"[red]✗[/red] {label} failed: {e}")
+            try:
+                client.completed(task_id, status="failed", error=str(e))
+            except Exception:
+                pass
+
+    def check_and_execute_tasks() -> None:
+        """Check for pending tasks and execute them inline"""
+        try:
+            tasks = client.list_pending_tasks()
+            if tasks:
+                for task in tasks:
+                    execute_task_inline(task)
+        except Exception as e:
+            console.print(f"[yellow]⚠[/yellow] Task check error: {e}")
+
     try:
         # Stream logs in real-time via WebSocket
         with console.status("[cyan]→[/cyan] Generating..."):
@@ -437,7 +504,11 @@ def generate(
                 else:
                     console.print(f"[cyan]→[/cyan] {log_message}")
 
-            task_status = client.stream_generation_logs(generation_id, handle_log)
+            task_status = client.stream_generation_logs(
+                generation_id,
+                handle_log,
+                on_check_tasks=check_and_execute_tasks,
+            )
 
         if not task_status:
             console.print("[yellow]⚠[/yellow] Lost connection to log stream")
@@ -525,252 +596,4 @@ def generate(
 
     elif task_status == "REVOKED":
         console.print("[yellow]⚠[/yellow] Generation was cancelled")
-        raise typer.Exit(1)
-
-
-@worker_app.command("start")
-def worker_start(
-    workers: int = typer.Option(
-        1, "--workers", "-w", help="Number of workers to start", min=1, max=10
-    ),
-    poll_interval: int = typer.Option(
-        5, "--poll-interval", "-p", help="Polling interval in seconds", min=1
-    ),
-):
-    """
-    Start background workers to execute Blender tasks.
-    Workers will run in the background and poll for pending tasks.
-    """
-
-    # Check authentication
-    api_key = config.get_api_key()
-    if not api_key:
-        console.print(
-            "[red]✗[/red] Not authenticated. Run 'nativeblend auth login' first."
-        )
-        raise typer.Exit(1)
-
-    try:
-        # Check if already running
-        if is_running():
-            pid = get_pid()
-            console.print("[yellow]⚠[/yellow] Worker service is already running")
-            console.print(
-                f"[dim]PID: {pid}[/dim]\n"
-                "[dim]Run 'nativeblend worker stop' to stop it first[/dim]"
-            )
-            raise typer.Exit(1)
-
-        # Start the service in background
-        console.print(
-            f"[cyan]→[/cyan] Starting worker service with {workers} worker(s)..."
-        )
-
-        # Fork to start daemon in background
-
-        subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                f"from nativeblend.worker import start_worker; start_worker({workers}, {poll_interval})",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-
-        # Give it a moment to start
-
-        time.sleep(1.5)
-
-        # Verify it started
-        if is_running():
-            pid = get_pid()
-            console.print(
-                Panel(
-                    f"[bold green]✓ Worker service started successfully![/bold green]\n\n"
-                    f"[bold]Workers:[/bold] {workers}\n"
-                    f"[bold]Poll interval:[/bold] {poll_interval}s\n"
-                    f"[bold]PID:[/bold] {pid}\n\n"
-                    f"[dim]View logs:[/dim] [cyan]nativeblend worker logs[/cyan]\n"
-                    f"[dim]Check status:[/dim] [cyan]nativeblend worker status[/cyan]\n"
-                    f"[dim]Stop workers:[/dim] [cyan]nativeblend worker stop[/cyan]",
-                    title="Worker Service",
-                    border_style="green",
-                )
-            )
-        else:
-            console.print(
-                "[red]✗[/red] Worker service failed to start\n"
-                "[dim]Check logs with:[/dim] [cyan]nativeblend worker logs[/cyan]"
-            )
-            raise typer.Exit(1)
-
-    except RuntimeError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
-    except ValueError as e:
-        console.print(f"[red]✗[/red] Configuration error: {e}")
-        raise typer.Exit(1)
-    except FileNotFoundError as e:
-        console.print(f"[red]✗[/red] {e}")
-        console.print(
-            "[dim]Configure Blender path with:[/dim]\n"
-            "[cyan]nativeblend config set generation.blender_path /path/to/blender[/cyan]"
-        )
-        raise typer.Exit(1)
-    except Exception as e:
-        console.print(f"[red]✗[/red] Failed to start workers: {e}")
-        import traceback
-
-        console.print(f"[dim]{traceback.format_exc()}[/dim]")
-        raise typer.Exit(1)
-
-
-@worker_app.command("stop")
-def worker_stop():
-    """Stop running worker service"""
-
-    try:
-        if not is_running():
-            console.print("[yellow]⚠[/yellow] Worker service is not running")
-            raise typer.Exit(0)
-
-        console.print("[cyan]→[/cyan] Stopping worker service...")
-        pid = get_pid()
-
-        # Stop the service
-        stop_worker()
-
-        console.print(
-            Panel(
-                f"[bold green]✓ Worker service stopped[/bold green]\n\n"
-                f"[bold]PID:[/bold] {pid}\n\n"
-                f"[dim]The service was gracefully shut down[/dim]",
-                title="Worker Service",
-                border_style="green",
-            )
-        )
-
-    except RuntimeError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise typer.Exit(1)
-    except Exception as e:
-        console.print(f"[red]✗[/red] Failed to stop workers: {e}")
-        raise typer.Exit(1)
-
-
-@worker_app.command("status")
-def worker_status():
-    """Show worker status and statistics"""
-
-    try:
-        running = is_running()
-
-        # Create status table
-        table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column("", style="bold")
-        table.add_column("")
-
-        if running:
-            pid = get_pid()
-            table.add_row("Status", "[green]✓ Running[/green]")
-            table.add_row("PID", str(pid))
-
-            # Load stats from file
-            stats = load_status()
-            if stats:
-                # Add stats to table
-                if stats.get("start_time"):
-                    start_time = datetime.fromisoformat(stats["start_time"])
-                    table.add_row("Started", start_time.strftime("%Y-%m-%d %H:%M:%S"))
-
-                uptime_seconds = stats.get("uptime_seconds", 0)
-                uptime = str(timedelta(seconds=int(uptime_seconds)))
-                table.add_row("Uptime", uptime)
-
-                table.add_row("Tasks Completed", str(stats.get("completed", 0)))
-                table.add_row("Tasks Failed", str(stats.get("failed", 0)))
-                table.add_row("Tasks In Progress", str(stats.get("in_progress", 0)))
-
-            console.print(
-                Panel(
-                    table,
-                    title="Worker Service Status",
-                    border_style="green",
-                )
-            )
-            console.print(
-                "\n[dim]View logs:[/dim] [cyan]nativeblend worker logs[/cyan]"
-            )
-        else:
-            table.add_row("Status", "[red]✗ Not running[/red]")
-            console.print(
-                Panel(
-                    table,
-                    title="Worker Service Status",
-                    border_style="red",
-                )
-            )
-            console.print(
-                "\n[dim]Start workers:[/dim] [cyan]nativeblend worker start[/cyan]"
-            )
-
-    except Exception as e:
-        console.print(f"[red]✗[/red] Failed to get worker status: {e}")
-        raise typer.Exit(1)
-
-
-@worker_app.command("logs")
-def worker_logs(
-    follow: bool = typer.Option(
-        False, "--follow", "-f", help="Follow log output (like tail -f)"
-    ),
-    lines: int = typer.Option(
-        50, "--lines", "-n", help="Number of lines to show from the end"
-    ),
-):
-    """View worker logs"""
-
-    log_file = get_log_file_path()
-
-    if not log_file.exists():
-        console.print(
-            "[yellow]⚠[/yellow] No log file found\n"
-            "[dim]Logs will appear after starting the worker service[/dim]"
-        )
-        raise typer.Exit(0)
-
-    try:
-        if follow:
-            # Use tail -f to follow logs
-            console.print(
-                f"[dim]Following logs from {log_file}[/dim]\n"
-                "[dim]Press Ctrl+C to stop[/dim]\n"
-            )
-            subprocess.run(["tail", "-f", str(log_file)])
-        else:
-            # Show last N lines
-            result = subprocess.run(
-                ["tail", "-n", str(lines), str(log_file)],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                console.print(f"[dim]Last {lines} lines from {log_file}:[/dim]\n")
-                console.print(result.stdout)
-            else:
-                console.print(f"[red]✗[/red] Failed to read log file: {result.stderr}")
-                raise typer.Exit(1)
-
-    except KeyboardInterrupt:
-        console.print("\n[dim]Stopped following logs[/dim]")
-    except FileNotFoundError:
-        console.print(
-            "[red]✗[/red] 'tail' command not found\n"
-            f"[dim]View logs directly at: {log_file}[/dim]"
-        )
-        raise typer.Exit(1)
-    except Exception as e:
-        console.print(f"[red]✗[/red] Failed to read logs: {e}")
         raise typer.Exit(1)

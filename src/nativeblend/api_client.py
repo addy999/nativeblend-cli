@@ -255,7 +255,10 @@ class APIClient:
             return None
 
     def stream_generation_logs(
-        self, generation_id: str, on_log: Callable[[str], None]
+        self,
+        generation_id: str,
+        on_log: Callable[[str], None],
+        on_check_tasks: Optional[Callable[[], None]] = None,
     ) -> Optional[str]:
         """
         Stream generation logs in real-time via WebSocket.
@@ -263,6 +266,8 @@ class APIClient:
         Args:
             generation_id: The ID of the generation task
             on_log: Callback function called for each log message
+            on_check_tasks: Optional callback fired after each message and on timeout
+                to check for and execute pending tasks inline
 
         Returns:
             Final status ("SUCCESS", "FAILURE", "REVOKED"), or None if failed
@@ -301,7 +306,14 @@ class APIClient:
                         on_log(f"Error: {data['error']}")
                         break
 
+                    # Check for tasks after each message
+                    if on_check_tasks:
+                        on_check_tasks()
+
                 except websocket.WebSocketTimeoutException:
+                    # Also check during quiet periods
+                    if on_check_tasks:
+                        on_check_tasks()
                     continue
                 except websocket.WebSocketConnectionClosedException:
                     break
