@@ -338,11 +338,10 @@ def generate(
         b64 = base64.b64encode(data).decode("utf-8")
         resolved_image_url = f"data:{mime_type};base64,{b64}"
 
-    if verbose:
-        console.print(f"[bold blue]Generating model for prompt:[/bold blue] {prompt}")
-        if resolved_image_url:
-            console.print(f"[bold blue]Reference image:[/bold blue] {image_url}")
-        console.print(f"[bold blue]Mode:[/bold blue] {mode}")
+    console.print(f"[bold blue]Generating model for prompt:[/bold blue] {prompt}")
+    if resolved_image_url:
+        console.print(f"[bold blue]Reference image:[/bold blue] {image_url}")
+    console.print(f"[bold blue]Mode:[/bold blue] {mode}")
 
     # Initialize API client
     client = APIClient()
@@ -383,7 +382,7 @@ def generate(
             return "Exporting model"
         if lower.endswith(".blend"):
             return "Saving Blender file"
-        if lower.endswith((".png", ".jpg", ".jpeg")):
+        if lower.endswith((".png", ".jpg", ".jpeg")) and "behind" not in lower:
             return "Rendering preview"
         return "Processing in Blender"
 

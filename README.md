@@ -33,7 +33,6 @@ Then use `nativeblend` command in your terminal.
 
 ```bash
 nativeblend init
-# You'll be asked if you want to start background workers
 ```
 
 2. Get your API key from [nativeblend](https://nativeblend.app)
@@ -83,41 +82,6 @@ By default renders and outputs are saved to `./outputs`. Change this in your con
 nativeblend config set output.default_dir /path/to/outputs
 ```
 
-### Background Workers
-
-Run workers in the background to execute Blender tasks without blocking your terminal.
-
-Workers can be started during `nativeblend init`, or manually anytime:
-
-```bash
-# Start workers in the background
-nativeblend worker start
-
-# Start with custom settings
-nativeblend worker start --workers 2 --poll-interval 10
-
-# Check worker status
-nativeblend worker status
-
-# View worker logs
-nativeblend worker logs
-
-# Follow logs in real-time
-nativeblend worker logs --follow
-
-# Stop workers
-nativeblend worker stop
-```
-
-**Worker Options:**
-
-- `--workers, -w` - Number of concurrent workers (1-10, default: 1)
-- `--poll-interval, -p` - Polling interval in seconds (default: 5)
-- `--lines, -n` - Number of log lines to show (default: 50)
-- `--follow, -f` - Follow log output like `tail -f`
-
-Workers run as background daemons and will continue executing tasks even after closing your terminal.
-
 ### Authentication
 
 ```bash
@@ -135,10 +99,10 @@ nativeblend auth logout
 
 1. **CLI sends prompt** - Your prompt is sent to NativeBlend's cloud API
 2. **AI generates code** - NativeBlend creates Blender Python scripts
-3. **Local execution** - Code runs on YOUR Blender (fast, private)
+3. **Inline execution** - Blender tasks (rendering, exporting) run locally on your machine during the generation stream
 4. **Iterative refinement** - NativeBlend reviews renders and improves until perfect
 
-Your Blender installation stays local - only prompts and small images are sent to the cloud.
+Your Blender installation stays local - only prompts and small preview images are sent to the cloud. No background workers needed; everything runs inline in your terminal.
 
 ## Configuration
 
