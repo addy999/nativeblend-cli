@@ -1,6 +1,7 @@
 import requests
 import websocket
 import json
+import time
 from typing import Optional, Dict, Any, Callable
 from urllib.parse import urljoin
 from .config import config
@@ -263,64 +264,110 @@ class APIClient:
         """
         Stream generation logs in real-time via WebSocket.
 
-        Args:
-            generation_id: The ID of the generation task
-            on_log: Callback function called for each log message
-            on_check_tasks: Optional callback fired after each message and on timeout
-                to check for and execute pending tasks inline
+        Retries on dropped connections (up to 5 attempts, exponential back-off)
+        unless a terminal status is received or confirmed via REST.
 
         Returns:
             Final status ("SUCCESS", "FAILURE", "REVOKED"), or None if failed
         """
-        # Convert https:// to wss:// or http:// to ws://
+        _TERMINAL_STATUSES = {"SUCCESS", "FAILURE", "REVOKED"}
+        _MAX_RETRIES = 5
+
         ws_base = self.base_url.replace("https://", "wss://").replace(
             "http://", "ws://"
         )
         ws_base = ws_base if ws_base.endswith("/") else ws_base + "/"
         ws_url = urljoin(ws_base, f"generate/{generation_id}/logs/stream")
 
-        try:
-            # Create WebSocket connection with auth header
-            ws = websocket.create_connection(
-                ws_url,
-                header=(
-                    [f"Authorization: Bearer {self.api_key}"] if self.api_key else None
-                ),
-                timeout=10,
+        def _is_done_via_rest() -> Optional[str]:
+            try:
+                result = self.get_generation_status(generation_id)
+                status = result and result.get("status")
+                return status if status in _TERMINAL_STATUSES else None
+            except Exception:
+                return None
+
+        final_status = None
+
+        for attempt in range(_MAX_RETRIES + 1):
+            ws = None
+            error_msg = None
+            try:
+                ws = websocket.create_connection(
+                    ws_url,
+                    header=(
+                        [f"Authorization: Bearer {self.api_key}"]
+                        if self.api_key
+                        else None
+                    ),
+                    timeout=10,
+                )
+
+                while True:
+                    try:
+                        raw = ws.recv()
+                        if not raw:
+                            if on_check_tasks:
+                                on_check_tasks()
+                            continue
+
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError:
+                            if on_check_tasks:
+                                on_check_tasks()
+                            continue
+
+                        if data.get("type") == "log":
+                            on_log(data.get("log", ""))
+                        elif data.get("type") == "status":
+                            final_status = data.get("status")
+                            break
+                        elif "error" in data:
+                            on_log(f"Error: {data['error']}")
+                            break
+
+                        if on_check_tasks:
+                            on_check_tasks()
+
+                    except websocket.WebSocketTimeoutException:
+                        if on_check_tasks:
+                            on_check_tasks()
+                    except websocket.WebSocketConnectionClosedException:
+                        break
+
+            except Exception as e:
+                error_msg = str(e)
+
+            finally:
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+
+            # Done if we have a terminal status
+            if final_status in _TERMINAL_STATUSES:
+                break
+
+            # Confirm via REST before retrying
+            rest_status = _is_done_via_rest()
+            if rest_status:
+                final_status = rest_status
+                break
+
+            if attempt >= _MAX_RETRIES:
+                if error_msg:
+                    on_log(f"WebSocket error: {error_msg}")
+                break
+
+            backoff = min(2**attempt, 30)
+            msg = (
+                f"Connection dropped ({error_msg})" if error_msg else "Connection lost"
             )
+            on_log(
+                f"{msg}, reconnecting in {backoff}s (attempt {attempt + 1}/{_MAX_RETRIES})..."
+            )
+            time.sleep(backoff)
 
-            final_status = None
-
-            # Receive messages
-            while True:
-                try:
-                    message = ws.recv()
-                    data = json.loads(message)
-
-                    if data.get("type") == "log":
-                        on_log(data.get("log", ""))
-                    elif data.get("type") == "status":
-                        final_status = data.get("status")
-                        break
-                    elif "error" in data:
-                        on_log(f"Error: {data['error']}")
-                        break
-
-                    # Check for tasks after each message
-                    if on_check_tasks:
-                        on_check_tasks()
-
-                except websocket.WebSocketTimeoutException:
-                    # Also check during quiet periods
-                    if on_check_tasks:
-                        on_check_tasks()
-                    continue
-                except websocket.WebSocketConnectionClosedException:
-                    break
-
-            ws.close()
-            return final_status
-
-        except Exception as e:
-            on_log(f"WebSocket error: {str(e)}")
-            return None
+        return final_status
