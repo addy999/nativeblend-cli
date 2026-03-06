@@ -515,19 +515,35 @@ def generate(
             except Exception:
                 pass
 
+    _executing_tasks = False
+
     def check_and_execute_tasks() -> None:
-        """Check for pending tasks and execute them inline"""
+        """Check for pending tasks and execute them inline.
+
+        Loops until the server has no more pending tasks, so that tasks
+        created while Blender is running are never silently dropped.
+        A re-entrancy guard prevents double-claiming if a WebSocket message
+        arrives while we are already inside this function.
+        """
+        nonlocal _executing_tasks
+        if _executing_tasks:
+            return
+        _executing_tasks = True
         try:
-            tasks = client.list_pending_tasks()
-            if tasks:
+            while True:
+                tasks = client.list_pending_tasks()
+                if not tasks:
+                    break
                 for task in tasks:
                     execute_task_inline(task)
         except Exception as e:
             console.print(f"[yellow]⚠[/yellow] Task check error: {e}")
+        finally:
+            _executing_tasks = False
 
     try:
         # Stream logs in real-time via WebSocket
-        with console.status("[cyan]→[/cyan] Generating..."):
+        with console.status("[cyan]→[/cyan] Building..."):
 
             def handle_log(log_message: str):
                 """Callback for each log message"""
