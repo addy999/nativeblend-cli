@@ -64,6 +64,7 @@ bpy.ops.object.delete()
         command = [
             blender_path,
             "--background",
+            "--factory-startup",  # Disable all add-ons and user preferences
             "--python",
             temp_file_path,
         ]
