@@ -445,8 +445,10 @@ def build(
                 new_artifact_path = os.path.abspath(
                     os.path.join(config.get("output.default_dir"), generation, filename)
                 )
+                # Normalize path to use forward slashes (works on Windows and avoids escape sequence issues)
+                new_artifact_path_normalized = new_artifact_path.replace("\\", "/")
                 result = run_blender_script_local(
-                    code.replace(artifact_path, new_artifact_path),
+                    code.replace(artifact_path, new_artifact_path_normalized),
                     timeout=120,
                     blender_path=blender_path,
                     artifact_path=new_artifact_path,

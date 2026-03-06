@@ -1,7 +1,20 @@
 import os
+import re
 import subprocess
-import sys
 import tempfile
+
+
+def _normalize_blender_script(script: str) -> str:
+    """
+    Normalize Blender script code to fix common issues:
+    - Remove unwanted line breaks in assignments (e.g., '= \\nos.path.abspath' -> '= os.path.abspath')
+    - Fix broken function calls and assignments
+    """
+    # Fix line breaks after assignment operators (=, +=, -=, etc.)
+    # Pattern: assignment operator followed by newline and then a non-whitespace character
+    script = re.sub(r"([+\-*/]?=)\s*\n\s*([a-zA-Z_])", r"\1 \2", script)
+
+    return script
 
 
 def run_blender_script_local(
@@ -11,6 +24,10 @@ def run_blender_script_local(
     timeout: int = 60,
 ) -> dict:
     """Execute a Blender script in the current process using a temporary file."""
+
+    # Normalize the script code
+    normalized_script = script_code.replace("bpy.ops.wm.read_factory_settings(use_empty=True)", "").strip()
+    normalized_script = _normalize_blender_script(normalized_script)
 
     full_script_code = f"""
 import bpy
@@ -31,7 +48,7 @@ for obj in bpy.context.scene.objects:
 bpy.ops.object.delete()
 
 # --- Your script starts here ---
-{script_code.replace("bpy.ops.wm.read_factory_settings(use_empty=True)", "").strip()}
+{normalized_script}
 # --- Your script ends here ---
 """
 
