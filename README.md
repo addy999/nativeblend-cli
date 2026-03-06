@@ -1,13 +1,13 @@
 # NativeBlend CLI
 
-Open-source command-line interface for generating 3D models in Blender using AI.
+Open-source command-line interface for building 3D models in Blender using AI.
 
 ## Features
 
-- 🎨 **Text & Image to 3D** - Generate models from natural language descriptions
+- 🎨 **Text & Image to 3D** - Build models from natural language descriptions
 - ⚡ **Local Blender Execution** - Fast rendering on your machine, no bandwidth waste
 - 🔄 **Real-time Progress** - Live streaming updates from the AI agent
-- 🎯 **Multiple Quality Modes** - Express, Standard, and Pro generation modes
+- 🎯 **Multiple Quality Modes** - Express, Standard, and Pro build modes
 - 🔐 **Secure** - API keys stored in system keychain
 
 ## Installation
@@ -44,33 +44,33 @@ nativeblend auth login
 # Enter your API key when prompted
 ```
 
-4. Generate your first model:
+4. Build your first model:
 
 ```bash
-nativeblend generate "a low poly spaceship"
+nativeblend build "a low poly spaceship"
 ```
 
 ## Usage
 
-### Generate a 3D Model
+### Build a 3D Model
 
 ```bash
-# Basic generation
-nativeblend generate "a red cube"
+# Basic build
+nativeblend build "a red cube"
 
 # Use different quality modes
-nativeblend generate "a spaceship" --mode pro
+nativeblend build "a spaceship" --mode pro
 
 # Use a reference image
-nativeblend generate "a car" --image reference.jpg
+nativeblend build "a car" --image reference.jpg
 
 # Enable verbose output
-nativeblend generate "a tree" --verbose
+nativeblend build "a tree" --verbose
 ```
 
 ### Modes
 
-- **express** - Fast generation, single iteration (~30s)
+- **express** - Fast build, single iteration (~30s)
 - **standard** - Balanced quality with refinement (~2min)
 - **pro** - High quality with multiple refinement passes (~5min)
 
@@ -98,8 +98,8 @@ nativeblend auth logout
 ## How It Works
 
 1. **CLI sends prompt** - Your prompt is sent to NativeBlend's cloud API
-2. **AI generates code** - NativeBlend creates Blender Python scripts
-3. **Inline execution** - Blender tasks (rendering, exporting) run locally on your machine during the generation stream
+2. **AI builds code** - NativeBlend creates Blender Python scripts
+3. **Inline execution** - Blender tasks (rendering, exporting) run locally on your machine during the build stream
 4. **Iterative refinement** - NativeBlend reviews renders and improves until perfect
 
 Your Blender installation stays local - only prompts and small preview images are sent to the cloud. No background workers needed; everything runs inline in your terminal.
@@ -131,9 +131,9 @@ save_renders = true
 
 ## Pricing
 
-- **Free Tier**: 5 generations/month (express or standard mode)
-- **Indie**: $29/month - Unlimited generations (express + standard + pro)
-- **Team**: $79/month - Unlimited generations + 3 seats + team collaboration features
+- **Free Tier**: 5 builds/month (express or standard mode)
+- **Indie**: $29/month - Unlimited builds (express + standard + pro)
+- **Team**: $79/month - Unlimited builds + 3 seats + team collaboration features
 
 See [pricing](https://nativeblend.app) for details.
 
@@ -176,7 +176,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Powered By
 
-NativeBlend CLI is powered by NativeBlend's proprietary AI agent infrastructure, combining industry knowledge with advanced vision models for iterative 3D generation.
+NativeBlend CLI is powered by NativeBlend's proprietary AI agent infrastructure, combining industry knowledge with advanced vision models for iterative 3D builds.
 
 ---
 

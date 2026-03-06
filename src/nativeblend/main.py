@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NativeBlend CLI - Generate 3D models in Blender using natural language prompts
+NativeBlend CLI - Build 3D models in Blender using natural language prompts
 """
 
 import os
@@ -24,7 +24,7 @@ console = Console()
 # Main app
 app = typer.Typer(
     name="nativeblend",
-    help="Generate 3D models in Blender using natural language prompts",
+    help="Build 3D models in Blender using natural language prompts",
     add_completion=True,
 )
 
@@ -63,7 +63,7 @@ def prompt_blender_download():
 
 @app.callback()
 def main():
-    """Native Blend CLI - Generate 3D models in Blender using natural language prompts"""
+    """Native Blend CLI - Build 3D models in Blender using natural language prompts"""
     pass
 
 
@@ -89,7 +89,7 @@ def init():
         table.add_row("API Timeout", f"{config.get('api.timeout')}s")
         table.add_row("Default Output Dir", config.get("output.default_dir"))
         table.add_row("Save Renders", str(config.get("output.save_renders")))
-        table.add_row("Default Mode", config.get("generation.default_mode"))
+        table.add_row("Default Build Mode", config.get("generation.default_mode"))
         table.add_row("Blender Path", config.get("generation.blender_path"))
 
         console.print(table)
@@ -288,10 +288,10 @@ def config_set(key: str, value: str):
         raise typer.Exit(1)
 
 
-@app.command("generate")
-def generate(
+@app.command("build")
+def build(
     prompt: str = typer.Argument(
-        help="Natural language description of the 3D model to generate"
+        help="Natural language description of the 3D model to build"
     ),
     image_url: Optional[str] = typer.Option(
         None,
@@ -303,19 +303,19 @@ def generate(
         None,
         "--mode",
         "-m",
-        help="Generation mode: 'express' (fast), 'standard' (balanced), 'pro' (high quality)",
+        help="Build mode: 'express' (fast), 'standard' (balanced), 'pro' (high quality)",
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
     ),
 ):
     """
-    Generate a 3D model from a natural language prompt.
+    Build a 3D model from a natural language prompt.
 
     Examples:
-        nativeblend generate "a low-poly red cube"
-        nativeblend generate "a racing car" --mode pro
-        nativeblend generate "a spaceship" --image reference.jpg
+        nativeblend build "a low-poly red cube"
+        nativeblend build "a racing car" --mode pro
+        nativeblend build "a spaceship" --image reference.jpg
     """
 
     # Check authentication
@@ -344,7 +344,7 @@ def generate(
         )
         raise typer.Exit(1)
 
-    # Now, let's generate.
+    # Now, let's build.
     # Use default mode from config if not specified
     if not mode:
         mode = config.get("generation.default_mode", "standard")
@@ -369,7 +369,7 @@ def generate(
         b64 = base64.b64encode(data).decode("utf-8")
         resolved_image_url = f"data:{mime_type};base64,{b64}"
 
-    console.print(f"[bold blue]Generating model for prompt:[/bold blue] {prompt}")
+    console.print(f"[bold blue]Building model for prompt:[/bold blue] {prompt}")
     if resolved_image_url:
         console.print(f"[bold blue]Reference image:[/bold blue] {image_url}")
     console.print(f"[bold blue]Mode:[/bold blue] {mode}")
@@ -377,8 +377,8 @@ def generate(
     # Initialize API client
     client = APIClient()
 
-    # Submit generation request
-    console.print("[cyan]→[/cyan] Submitting generation request...")
+    # Submit build request
+    console.print("[cyan]→[/cyan] Submitting build request...")
     result = client.submit_generation(
         prompt=prompt,
         image_url=resolved_image_url,
@@ -387,13 +387,11 @@ def generate(
 
     if not result or "error" in result:
         error_msg = result.get("error") if result else "Unknown error"
-        console.print(f"[red]✗[/red] Failed to submit generation request: {error_msg}")
+        console.print(f"[red]✗[/red] Failed to submit build request: {error_msg}")
         raise typer.Exit(1)
 
     generation_id = result["generation_id"]
-    console.print(
-        f"[green]✓[/green] Generation started (ID: [cyan]{generation_id}[/cyan])"
-    )
+    console.print(f"[green]✓[/green] Build started (ID: [cyan]{generation_id}[/cyan])")
 
     output_path = os.path.join(config.get("output.default_dir"), generation_id)
     console.print(
@@ -567,24 +565,24 @@ def generate(
 
     except KeyboardInterrupt:
         console.print(
-            f"\n[yellow]⚠[/yellow] Cancelling generation [cyan]{generation_id}[/cyan]..."
+            f"\n[yellow]⚠[/yellow] Cancelling build [cyan]{generation_id}[/cyan]..."
         )
         cancelled = client.cancel_generation(generation_id)
         if cancelled:
             console.print(
-                f"[yellow]⚠[/yellow] Generation [cyan]{generation_id}[/cyan] has been revoked"
+                f"[yellow]⚠[/yellow] Build [cyan]{generation_id}[/cyan] has been cancelled"
             )
         else:
-            console.print(f"[red]✗[/red] Failed to revoke generation {generation_id}")
+            console.print(f"[red]✗[/red] Failed to cancel build {generation_id}")
         raise typer.Exit(1)
 
     # Get final result
     if task_status == "SUCCESS":
-        console.print("[cyan]→[/cyan] Fetching generation result...")
+        console.print("[cyan]→[/cyan] Fetching build result...")
         final_result = client.get_generation_result(generation_id)
 
         if not final_result:
-            console.print("[red]✗[/red] Failed to fetch generation result")
+            console.print("[red]✗[/red] Failed to fetch build result")
             raise typer.Exit(1)
 
         elapsed_time = final_result.get("elapsed_time", 0)
@@ -618,10 +616,10 @@ def generate(
         console.print()
         console.print(
             Panel(
-                f"[bold green]✓ Model generation completed![/bold green]\n\n"
+                f"[bold green]✓ Model build completed![/bold green]\n\n"
                 f"[bold]Prompt:[/bold] {prompt}\n"
                 f"[bold]Mode:[/bold] {mode}\n"
-                f"[bold]Generation ID:[/bold] {generation_id}\n"
+                f"[bold]Build ID:[/bold] {generation_id}\n"
                 f"[bold]Elapsed time:[/bold] {elapsed_time:.1f}s\n\n"
                 f"[dim]View your model at: https://nativeblend.app/build?generationId={generation_id}[/dim]",
                 title="Success",
@@ -633,8 +631,8 @@ def generate(
         # TODO: Fetch error details from API and display them here
         console.print(
             Panel(
-                "[bold red]✗ Model generation failed[/bold red]\n\n"
-                f"[bold]Generation ID:[/bold] {generation_id}\n"
+                "[bold red]✗ Model build failed[/bold red]\n\n"
+                f"[bold]Build ID:[/bold] {generation_id}\n"
                 f"[dim]Check the web app for error details[/dim]",
                 title="Failed",
                 border_style="red",
@@ -643,5 +641,5 @@ def generate(
         raise typer.Exit(1)
 
     elif task_status == "REVOKED":
-        console.print("[yellow]⚠[/yellow] Generation was cancelled")
+        console.print("[yellow]⚠[/yellow] Build was cancelled")
         raise typer.Exit(1)
