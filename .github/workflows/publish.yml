@@ -1,27 +1,58 @@
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
+  push:
+    paths:
+      - 'pyproject.toml'
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if version changed
+        id: version_check
+        run: |
+          OLD_VERSION=$(git show HEAD~1:pyproject.toml | grep '^version' | head -1 | tr -d ' ' | cut -d'"' -f2)
+          NEW_VERSION=$(grep '^version' pyproject.toml | head -1 | tr -d ' ' | cut -d'"' -f2)
+          echo "Old version: $OLD_VERSION"
+          echo "New version: $NEW_VERSION"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Install UV
+        if: steps.version_check.outputs.changed == 'true'
         uses: astral-sh/setup-uv@v4
         with:
           version: "latest"
 
       - name: Set up Python
+        if: steps.version_check.outputs.changed == 'true'
         run: uv python install 3.12
 
       - name: Build package
+        if: steps.version_check.outputs.changed == 'true'
         run: uv build
 
       - name: Publish to PyPI
+        if: steps.version_check.outputs.changed == 'true'
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: uv publish
+
+      - name: Create GitHub Release
+        if: steps.version_check.outputs.changed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version_check.outputs.version }}
+          name: v${{ steps.version_check.outputs.version }}
+          generate_release_notes: true
