@@ -37,6 +37,30 @@ config_app = typer.Typer(help="Manage configuration settings")
 app.add_typer(config_app, name="config")
 
 
+def check_blender_exists(blender_path: str) -> bool:
+    """
+    Check if Blender executable exists at the given path.
+    Returns True if exists, False otherwise.
+    """
+    return os.path.exists(blender_path)
+
+
+def prompt_blender_download():
+    """Display error message and Blender download link."""
+    console.print(
+        Panel(
+            "[bold red]✗ Blender not found[/bold red]\n\n"
+            "NativeBlend CLI requires Blender to be installed on your system.\n\n"
+            "[bold]Download Blender:[/bold]\n"
+            "🔗 https://www.blender.org/download/\n\n"
+            "[dim]After installing, run:[/dim]\n"
+            "  nativeblend config set generation.blender_path /path/to/blender",
+            title="Blender Required",
+            border_style="red",
+        )
+    )
+
+
 @app.callback()
 def main():
     """Native Blend CLI - Generate 3D models in Blender using natural language prompts"""
@@ -73,6 +97,17 @@ def init():
         console.print(
             "\n[green]✓[/green]Run 'nativeblend auth login' to authenticate with your API key"
         )
+
+        # Check if Blender exists
+        blender_path = config.get("generation.blender_path")
+        console.print(f"\n[bold]Checking Blender installation...[/bold]")
+
+        if not check_blender_exists(blender_path):
+            console.print()
+            prompt_blender_download()
+            raise typer.Exit(1)
+
+        console.print(f"[green]✓[/green] Blender found at: {blender_path}")
 
     except Exception as e:
         console.print(f"[red]✗[/red] Failed to initialize config: {e}")
@@ -292,18 +327,14 @@ def generate(
         raise typer.Exit(1)
 
     # Test blender
-    if not os.path.exists(config.get_blender_path()):
-        console.print(
-            f"[red]✗[/red] Blender executable not found at: {config.get_blender_path()}"
-        )
-        console.print(
-            "[dim]Please set the correct path to your Blender executable using 'nativeblend config set generation.blender_path /path/to/blender'[/dim]"
-        )
+    blender_path = config.get_blender_path()
+    if not check_blender_exists(blender_path):
+        prompt_blender_download()
         raise typer.Exit(1)
 
     result = run_blender_script_local(
         'import bpy; print("Blender is working")',
-        blender_path=config.get_blender_path(),
+        blender_path=blender_path,
         timeout=10,
     )
     if "error" in result:
