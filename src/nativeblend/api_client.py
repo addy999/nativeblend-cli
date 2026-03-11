@@ -43,12 +43,21 @@ class APIClient:
         except requests.RequestException:
             return False
 
-    def list_pending_tasks(self) -> Optional[list]:
-        """List pending tasks for the current user"""
+    def list_pending_tasks(self, generation_id: str) -> Optional[list]:
+        """
+        List pending tasks for a specific generation.
+
+        Args:
+            generation_id: Generation ID to filter tasks by (required)
+
+        Returns:
+            List of pending tasks, or None if failed
+        """
         try:
             response = requests.get(
                 self._url("cli/tasks"),
                 headers=self._get_headers(),
+                params={"generation_id": generation_id},
                 timeout=self.timeout,
             )
 

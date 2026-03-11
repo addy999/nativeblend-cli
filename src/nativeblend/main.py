@@ -531,7 +531,7 @@ def build(
         _executing_tasks = True
         try:
             while True:
-                tasks = client.list_pending_tasks()
+                tasks = client.list_pending_tasks(generation_id=generation_id)
                 if not tasks:
                     break
                 for task in tasks:
