@@ -2,6 +2,34 @@ import os
 import re
 import subprocess
 import tempfile
+import typer
+from .config import config
+
+
+def check_blender_exists(blender_path: str) -> bool:
+    """
+    Check if Blender executable exists at the given path.
+    Returns True if exists, False otherwise.
+    """
+    return os.path.exists(blender_path)
+
+
+def prompt_blender_download():
+    """Display error message and Blender download link."""
+    from .main import console
+
+    console.print(
+        Panel(
+            "[bold red]✗ Blender not found[/bold red]\n\n"
+            "NativeBlend CLI requires Blender to be installed on your system.\n\n"
+            "[bold]Download Blender:[/bold]\n"
+            "🔗 https://www.blender.org/download/\n\n"
+            "[dim]After installing, run:[/dim]\n"
+            "  nativeblend config set generation.blender_path /path/to/blender",
+            title="Blender Required",
+            border_style="red",
+        )
+    )
 
 
 def _normalize_blender_script(script: str) -> str:
@@ -25,8 +53,15 @@ def run_blender_script_local(
 ) -> dict:
     """Execute a Blender script in the current process using a temporary file."""
 
+    blender_path = config.get_blender_path()
+    if not check_blender_exists(blender_path):
+        prompt_blender_download()
+        raise typer.Exit(1)
+
     # Normalize the script code
-    normalized_script = script_code.replace("bpy.ops.wm.read_factory_settings(use_empty=True)", "").strip()
+    normalized_script = script_code.replace(
+        "bpy.ops.wm.read_factory_settings(use_empty=True)", ""
+    ).strip()
     normalized_script = _normalize_blender_script(normalized_script)
 
     full_script_code = f"""
@@ -98,8 +133,17 @@ bpy.ops.object.delete()
             return {"error": result}
 
         # Check if artifact file exists
-        if artifact_path and os.path.exists(artifact_path):
-            return {"success": True, "output": result, "artifact_path": artifact_path}
+        if artifact_path:
+            if os.path.exists(artifact_path):
+                return {
+                    "success": True,
+                    "output": result,
+                    "artifact_path": artifact_path,
+                }
+            else:
+                return {
+                    "error": f"Blender script executed but artifact not found at {artifact_path}"
+                }
 
         return {"success": True, "output": result, "artifact_path": None}
 
@@ -113,17 +157,66 @@ bpy.ops.object.delete()
         return {"error": f"Error executing Blender script: {str(e)}"}
 
 
-# if __name__ == "__main__":
-#     script_path = sys.argv[1]
-#     with open(script_path, "r") as f:
-#         script_code = f.read()
-#     result = run_blender_script_local(script_code)
-#     print(result)
-#     if "error" in result:
-#         print("Error executing Blender script:")
-#         print(result["error"])
-#     else:
-#         print("Blender script executed successfully:")
-#         print(result["output"])
-#         if result["artifact"]:
-#             print(f"Artifact saved at: {result['artifact']}")
+def export_blender_file_local(
+    script_code: str,
+    generation_id: str,
+) -> str:
+    """Executes a Blender Python script and saves the resulting scene as a .blend file."""
+
+    save_path = os.path.abspath(
+        os.path.join(
+            config.get("output.default_dir"), generation_id, "final_output.blend"
+        )
+    )
+    full_script = f"""
+import bpy
+import os
+
+# --- Your script starts here ---
+{script_code}
+# --- Your script ends here ---
+
+# --- Save the scene as a .blend file ---
+output_file = os.path.abspath('{save_path}')
+bpy.ops.wm.save_as_mainfile(filepath=output_file, compress=True)
+
+print(f"Scene saved to {{output_file}}")
+"""
+    result = run_blender_script_local(
+        full_script, config.get_blender_path(), artifact_path=save_path, timeout=300
+    )
+
+    if result.get("error"):
+        raise Exception(result["error"])
+
+    return save_path
+
+
+def export_glb_local(
+    script_code: str,
+    generation_id: str,
+) -> str:
+    """Executes a Blender Python script and exports the scene as a GLB file."""
+
+    save_path = os.path.abspath(
+        os.path.join(
+            config.get("output.default_dir"), generation_id, "final_output.glb"
+        )
+    )
+    full_script = f"""{script_code}
+
+
+# --- Export the scene to GLB ---
+output_file = os.path.abspath('{save_path}')
+bpy.ops.export_scene.gltf(filepath=output_file, export_format='GLB', export_apply=True, export_texcoords=True)
+
+print(f"Scene exported to {{output_file}}")
+"""
+    result = run_blender_script_local(
+        full_script, config.get_blender_path(), artifact_path=save_path, timeout=300
+    )
+
+    if result.get("error"):
+        raise Exception(result["error"])
+
+    return save_path

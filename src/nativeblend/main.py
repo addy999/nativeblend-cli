@@ -16,7 +16,12 @@ import json as json_lib
 from typing import Optional
 from .config import config
 from .api_client import APIClient
-from .executor import run_blender_script_local
+from .executor import (
+    run_blender_script_local,
+    export_blender_file_local,
+    export_glb_local,
+    check_blender_exists,
+)
 
 # Initialize console for rich output
 console = Console()
@@ -35,30 +40,6 @@ app.add_typer(auth_app, name="auth")
 # Config subcommand group
 config_app = typer.Typer(help="Manage configuration settings")
 app.add_typer(config_app, name="config")
-
-
-def check_blender_exists(blender_path: str) -> bool:
-    """
-    Check if Blender executable exists at the given path.
-    Returns True if exists, False otherwise.
-    """
-    return os.path.exists(blender_path)
-
-
-def prompt_blender_download():
-    """Display error message and Blender download link."""
-    console.print(
-        Panel(
-            "[bold red]✗ Blender not found[/bold red]\n\n"
-            "NativeBlend CLI requires Blender to be installed on your system.\n\n"
-            "[bold]Download Blender:[/bold]\n"
-            "🔗 https://www.blender.org/download/\n\n"
-            "[dim]After installing, run:[/dim]\n"
-            "  nativeblend config set generation.blender_path /path/to/blender",
-            title="Blender Required",
-            border_style="red",
-        )
-    )
 
 
 @app.callback()
@@ -587,32 +568,16 @@ def build(
             console.print("[red]✗[/red] Failed to fetch build result")
             raise typer.Exit(1)
 
+        code: str = final_result.get("code")
         elapsed_time = final_result.get("elapsed_time", 0)
-        model_file_url = final_result.get("model_file_url")
-        blender_file_url = final_result.get("blender_file_url")
 
-        # Download files if URLs are provided and save to output directory
-        if model_file_url:
-            console.print(f"[cyan]→[/cyan] Downloading model file...")
-            model_response = client.download_file(model_file_url)
-            if model_response:
-                model_path = os.path.join(output_path, "final-model.glb")
-                with open(model_path, "wb") as f:
-                    f.write(model_response)
-                console.print(f"[green]✓[/green] Model file saved to: {model_path}")
-            else:
-                console.print(f"[yellow]⚠[/yellow] Failed to download model file")
+        console.print(f"[cyan]→[/cyan] Building Blender file...")
+        blender_path = export_blender_file_local(code, generation_id)
+        console.print(f"[green]✓[/green] Blender file saved to: {blender_path}")
 
-        if blender_file_url:
-            console.print(f"[cyan]→[/cyan] Downloading Blender file...")
-            blender_response = client.download_file(blender_file_url)
-            if blender_response:
-                blender_path = os.path.join(output_path, "final-model.blend")
-                with open(blender_path, "wb") as f:
-                    f.write(blender_response)
-                console.print(f"[green]✓[/green] Blender file saved to: {blender_path}")
-            else:
-                console.print(f"[yellow]⚠[/yellow] Failed to download Blender file")
+        console.print(f"[cyan]→[/cyan] Building model file...")
+        model_path = export_glb_local(code, generation_id)
+        console.print(f"[green]✓[/green] Model file saved to: {model_path}")
 
         # Show success message
         console.print()
@@ -643,5 +608,5 @@ def build(
         raise typer.Exit(1)
 
     elif task_status == "REVOKED":
-        console.print("[yellow]⚠[/yellow] Build was cancelled")
+        console.print("[yellow]⚠[/yellow] Build was cancelled or timed out.")
         raise typer.Exit(1)
