@@ -14,6 +14,7 @@ from rich.table import Table
 from rich.panel import Panel
 import json as json_lib
 from typing import Optional, Dict, Any
+from . import __version__
 from .config import config
 from .api_client import APIClient
 from .executor import (
@@ -43,8 +44,23 @@ config_app = typer.Typer(help="Manage configuration settings")
 app.add_typer(config_app, name="config")
 
 
+def version_callback(value: bool):
+    """Callback for --version flag"""
+    if value:
+        console.print(f"nativeblend version [cyan]{__version__}[/cyan]")
+        raise typer.Exit()
+
+
 @app.callback()
-def main():
+def main(
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        help="Show version and exit",
+        callback=version_callback,
+        is_eager=True,
+    )
+):
     """Native Blend CLI - Build 3D models in Blender using natural language prompts"""
     pass
 
