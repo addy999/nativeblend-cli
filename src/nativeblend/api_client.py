@@ -292,7 +292,7 @@ class APIClient:
             try:
                 result = self.get_generation_status(generation_id)
                 status = result and result.get("status")
-                return status if status in _TERMINAL_STATUSES else None
+                return status if isinstance(status, str) and status in _TERMINAL_STATUSES else None
             except Exception:
                 return None
 

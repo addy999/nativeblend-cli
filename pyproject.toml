@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nativeblend"
-version = "0.1.7"
+version = "0.1.8"
 description = "NativeBlend CLI - Build and Edit 3D models in Blender using AI"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -42,3 +42,9 @@ package = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nativeblend"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "types-requests>=2.32.4.20260107",
+]

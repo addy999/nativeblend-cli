@@ -17,6 +17,7 @@ def check_blender_exists(blender_path: str) -> bool:
 def prompt_blender_download():
     """Display error message and Blender download link."""
     from .main import console
+    from rich.panel import Panel
 
     console.print(
         Panel(

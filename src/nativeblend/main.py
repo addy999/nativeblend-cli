@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 import json as json_lib
-from typing import Optional
+from typing import Optional, Dict, Any
 from .config import config
 from .api_client import APIClient
 from .executor import (
@@ -361,18 +361,18 @@ def build(
 
     # Submit build request
     console.print("[cyan]→[/cyan] Submitting build request...")
-    result = client.submit_generation(
+    gen_result: Optional[Dict[str, Any]] = client.submit_generation(
         prompt=prompt,
         image_url=resolved_image_url,
         mode=mode,
     )
 
-    if not result or "error" in result:
-        error_msg = result.get("error") if result else "Unknown error"
+    if not gen_result or "error" in gen_result:
+        error_msg = gen_result.get("error") if gen_result else "Unknown error"
         console.print(f"[red]✗[/red] Failed to submit build request: {error_msg}")
         raise typer.Exit(1)
 
-    generation_id = result["generation_id"]
+    generation_id = gen_result["generation_id"]
     console.print(f"[green]✓[/green] Build started (ID: [cyan]{generation_id}[/cyan])")
 
     output_path = os.path.join(config.get("output.default_dir"), generation_id)
@@ -569,7 +569,7 @@ def build(
             console.print("[red]✗[/red] Failed to fetch build result")
             raise typer.Exit(1)
 
-        code: str = final_result.get("code")
+        code = final_result.get("code", "")
         elapsed_time = final_result.get("elapsed_time", 0)
 
         console.print(f"[cyan]→[/cyan] Building Blender file...")
