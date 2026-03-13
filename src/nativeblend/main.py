@@ -111,9 +111,7 @@ def auth_login(
 
     # Get API key from user if not provided
     if not api_key:
-        api_key = typer.prompt(
-            "Enter your NativeBlend API key", hide_input=True
-        ).strip()
+        api_key = typer.prompt("Enter your NativeBlend API key").strip()
 
     if not api_key:
         console.print("[red]✗[/red] API key cannot be empty")
