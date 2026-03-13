@@ -21,6 +21,7 @@ from .executor import (
     export_blender_file_local,
     export_glb_local,
     check_blender_exists,
+    prompt_blender_download,
 )
 
 # Initialize console for rich output
