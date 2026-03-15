@@ -178,7 +178,7 @@ import os
 # --- Your script ends here ---
 
 # --- Save the scene as a .blend file ---
-output_file = os.path.abspath('{save_path}')
+output_file = os.path.abspath({repr(save_path)})
 bpy.ops.wm.save_as_mainfile(filepath=output_file, compress=True)
 
 print(f"Scene saved to {{output_file}}")
@@ -208,7 +208,7 @@ def export_glb_local(
 
 
 # --- Export the scene to GLB ---
-output_file = os.path.abspath('{save_path}')
+output_file = os.path.abspath({repr(save_path)})
 bpy.ops.export_scene.gltf(filepath=output_file, export_format='GLB', export_apply=True, export_texcoords=True)
 
 print(f"Scene exported to {{output_file}}")
