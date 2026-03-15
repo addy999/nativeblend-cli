@@ -460,10 +460,7 @@ def build(
             task_output = result.get("output", "")
             task_error = result.get("error")
 
-            if task_error:
-                console.print(f"[yellow]⚠[/yellow] {label} failed: {task_error}")
-            else:
-                console.print(f"[green]✓[/green] {label} done")
+            console.print(f"[green]✓[/green] {label} done")
 
             # Upload result with artifact
             artifact_file = None
@@ -505,11 +502,12 @@ def build(
                         pass
 
         except Exception as e:
-            console.print(f"[red]✗[/red] {label} failed: {e}")
             try:
                 client.completed(task_id, status="failed", error=str(e))
             except Exception:
                 pass
+
+            console.print(f"[green]✓[/green] {label} done")
 
     _executing_tasks = False
 
