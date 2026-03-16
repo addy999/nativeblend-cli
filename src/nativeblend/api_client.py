@@ -1,5 +1,6 @@
 import requests
 import websocket
+import certifi
 import json
 import time
 from typing import Optional, Dict, Any, Callable
@@ -310,6 +311,7 @@ class APIClient:
                         else None
                     ),
                     timeout=10,
+                    sslopt={"ca_certs": certifi.where()},
                 )
 
                 while True:
