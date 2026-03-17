@@ -608,12 +608,11 @@ def build(
         )
 
     elif task_status == "FAILURE":
-        # TODO: Fetch error details from API and display them here
         console.print(
             Panel(
                 "[bold red]✗ Model build failed[/bold red]\n\n"
                 f"[bold]Build ID:[/bold] {generation_id}\n"
-                f"[dim]Check the web app for error details[/dim]",
+                f"[dim]Contact support at support@nativeblend.app[/dim]",
                 title="Failed",
                 border_style="red",
             )
@@ -621,5 +620,5 @@ def build(
         raise typer.Exit(1)
 
     elif task_status == "REVOKED":
-        console.print("[yellow]⚠[/yellow] Build was cancelled or timed out.")
+        console.print("[yellow]⚠[/yellow] Build timed out or was cancelled")
         raise typer.Exit(1)
