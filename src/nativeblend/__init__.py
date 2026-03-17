@@ -1,11 +1,7 @@
 """NativeBlend CLI"""
 
-from importlib.metadata import version, PackageNotFoundError
+from importlib.metadata import version
 
-try:
-    __version__ = version("nativeblend")
-except PackageNotFoundError:
-    # Package is not installed, use a fallback version
-    __version__ = "dev"
 
+__version__ = version("nativeblend")
 __all__ = ["__version__"]

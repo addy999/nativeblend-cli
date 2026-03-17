@@ -10,6 +10,7 @@ from enum import Enum
 import typer
 import base64
 import mimetypes
+import requests
 from pathlib import Path as FilePath
 from rich.console import Console
 from rich.table import Table
@@ -64,6 +65,31 @@ config_app = typer.Typer(help="Manage configuration settings")
 app.add_typer(config_app, name="config")
 
 
+def _version_tuple(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except ValueError:
+        return (0,)
+
+
+def _check_for_update() -> Optional[str]:
+    """Check PyPI for a newer version. Returns the latest version string if newer, else None."""
+    try:
+        response = requests.get(
+            "https://pypi.org/pypi/nativeblend/json",
+            timeout=2,
+        )
+        if response.status_code == 200:
+            latest = response.json()["info"]["version"]
+            if __version__ != "dev" and _version_tuple(latest) > _version_tuple(
+                __version__
+            ):
+                return latest
+    except Exception:
+        console.print("[yellow]⚠[/yellow] Update check failed")
+    return None
+
+
 def version_callback(value: bool):
     """Callback for --version flag"""
     if value:
@@ -82,7 +108,21 @@ def main(
     )
 ):
     """Native Blend CLI - Build 3D models in Blender using natural language prompts"""
-    pass
+    _result: list = [None]
+
+    def _do_check():
+        _result[0] = _check_for_update()
+
+    t = threading.Thread(target=_do_check, daemon=True)
+    t.start()
+    t.join(timeout=2)
+
+    if _result[0]:
+        console.print(
+            f"[yellow]A new version of nativeblend is available:[/yellow] "
+            f"[dim]{__version__}[/dim] → [cyan bold]{_result[0]}[/cyan bold]\n"
+            f"[dim]Run:[/dim] [bold]pip install nativeblend --upgrade[/bold]\n"
+        )
 
 
 @app.command("init")
