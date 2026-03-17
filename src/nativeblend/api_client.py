@@ -141,6 +141,7 @@ class APIClient:
         prompt: str,
         image_url: Optional[str] = None,
         mode: str = "standard",
+        style: str = "auto",
     ) -> Optional[Dict[str, Any]]:
         """
         Submit a generation request to the API.
@@ -149,6 +150,8 @@ class APIClient:
             prompt: Natural language description of the 3D model
             image_url: Optional reference image URL or file path
             mode: Generation mode - "express", "standard", or "pro"
+            style: Visual style - "auto", "low-poly", "stylized", "semi-realistic",
+                   "realistic", "cartoon", "geometric", "voxel", or "retro"
 
         Returns:
             Dictionary with generation_id and status, or None if failed
@@ -157,6 +160,7 @@ class APIClient:
             payload = {
                 "prompt": prompt,
                 "mode": mode,
+                "style": style,
             }
             if image_url:
                 payload["image_url"] = image_url
@@ -293,7 +297,11 @@ class APIClient:
             try:
                 result = self.get_generation_status(generation_id)
                 status = result and result.get("status")
-                return status if isinstance(status, str) and status in _TERMINAL_STATUSES else None
+                return (
+                    status
+                    if isinstance(status, str) and status in _TERMINAL_STATUSES
+                    else None
+                )
             except Exception:
                 return None
 

@@ -4,6 +4,8 @@ NativeBlend CLI - Build 3D models in Blender using natural language prompts
 """
 
 import os
+import threading
+from enum import Enum
 
 import typer
 import base64
@@ -24,6 +26,24 @@ from .executor import (
     check_blender_exists,
     prompt_blender_download,
 )
+
+class BuildMode(str, Enum):
+    express = "express"
+    standard = "standard"
+    pro = "pro"
+
+
+class BuildStyle(str, Enum):
+    auto = "auto"
+    low_poly = "low-poly"
+    stylized = "stylized"
+    semi_realistic = "semi-realistic"
+    realistic = "realistic"
+    cartoon = "cartoon"
+    geometric = "geometric"
+    voxel = "voxel"
+    retro = "retro"
+
 
 # Initialize console for rich output
 console = Console()
@@ -88,6 +108,7 @@ def init():
         table.add_row("Default Output Dir", config.get("output.default_dir"))
         table.add_row("Save Renders", str(config.get("output.save_renders")))
         table.add_row("Default Build Mode", config.get("generation.default_mode"))
+        table.add_row("Default Style", config.get("generation.default_style"))
         table.add_row("Blender Path", config.get("generation.blender_path"))
 
         console.print(table)
@@ -295,11 +316,17 @@ def build(
         "-i",
         help="URL or local path to reference image for the 3D model",
     ),
-    mode: str = typer.Option(
+    mode: Optional[BuildMode] = typer.Option(
         None,
         "--mode",
         "-m",
-        help="Build mode: 'express' (fast), 'standard' (balanced), 'pro' (high quality)",
+        help="Build mode (default: from config or 'standard')",
+    ),
+    style: Optional[BuildStyle] = typer.Option(
+        None,
+        "--style",
+        "-s",
+        help="Visual style (default: from config or 'auto')",
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
@@ -309,9 +336,10 @@ def build(
     Build a 3D model from a natural language prompt.
 
     Examples:
-        nativeblend build "a low-poly red cube"
-        nativeblend build "a racing car" --mode pro
-        nativeblend build "a spaceship" --image reference.jpg
+        nativeblend build "a car"
+        nativeblend build "a car" --style low-poly
+        nativeblend build "a racing car" --mode pro --style realistic
+        nativeblend build "a spaceship" --image reference.jpg --style cartoon
     """
 
     # Check authentication
@@ -341,16 +369,11 @@ def build(
         raise typer.Exit(1)
 
     # Now, let's build.
-    # Use default mode from config if not specified
-    if not mode:
-        mode = config.get("generation.default_mode", "standard")
-
-    # Validate mode
-    valid_modes = ["express", "standard", "pro"]
-    if mode not in valid_modes:
-        console.print(f"[red]✗[/red] Invalid mode: {mode}")
-        console.print(f"[dim]Valid modes are: {', '.join(valid_modes)}[/dim]")
-        raise typer.Exit(1)
+    # Fall back to config defaults when not provided on the CLI
+    if mode is None:
+        mode = BuildMode(config.get("generation.default_mode", BuildMode.standard))
+    if style is None:
+        style = BuildStyle(config.get("generation.default_style", BuildStyle.auto))
 
     # Resolve local image path to base64 data URL if needed
     resolved_image_url = image_url
@@ -369,6 +392,7 @@ def build(
     if resolved_image_url:
         console.print(f"[bold blue]Reference image:[/bold blue] {image_url}")
     console.print(f"[bold blue]Mode:[/bold blue] {mode}")
+    console.print(f"[bold blue]Style:[/bold blue] {style}")
 
     # Initialize API client
     client = APIClient()
@@ -379,6 +403,7 @@ def build(
         prompt=prompt,
         image_url=resolved_image_url,
         mode=mode,
+        style=style,
     )
 
     if not gen_result or "error" in gen_result:
@@ -599,6 +624,7 @@ def build(
                 f"[bold green]✓ Model build completed![/bold green]\n\n"
                 f"[bold]Prompt:[/bold] {prompt}\n"
                 f"[bold]Mode:[/bold] {mode}\n"
+                f"[bold]Style:[/bold] {style}\n"
                 f"[bold]Build ID:[/bold] {generation_id}\n"
                 f"[bold]Elapsed time:[/bold] {elapsed_time:.1f}s\n\n"
                 f"[dim]View your model at: https://nativeblend.app/build?generationId={generation_id}[/dim]",

@@ -70,6 +70,7 @@ class Config:
             },
             "generation": {
                 "default_mode": "standard",
+                "default_style": "auto",
                 "blender_path": DEFAULT_BLENDER_PATH,
             },
         }
