@@ -29,6 +29,8 @@ Then use `nativeblend` command in your terminal.
 
 ## Quick Start
 
+Make sure you have Python and Blender installed on your machine.
+
 1. Initialize the CLI:
 
 ```bash
@@ -64,15 +66,34 @@ nativeblend build "a spaceship" --mode pro
 # Use a reference image
 nativeblend build "a car" --image reference.jpg
 
+# Use a specific style
+nativeblend build "a car" --style low-poly
+nativeblend build "a racing car" --mode pro --style realistic
+nativeblend build "a spaceship" --image reference.jpg --style cartoon
+
 # Enable verbose output
 nativeblend build "a tree" --verbose
 ```
 
 ### Modes
 
-- **express** - Fast build, single iteration (~30s)
-- **standard** - Balanced quality with refinement (~2min)
-- **pro** - High quality with multiple refinement passes (~5min)
+- **express** - Fast build, single iteration (<10min)
+- **standard** - Balanced quality with refinement (<30min)
+- **pro** - High quality with multiple refinement passes (<60min)
+
+### Styles
+
+Use `--style` to control the visual aesthetic of your model:
+
+- **auto** - Let the AI decide based on your prompt (default)
+- **low-poly** - Faceted, low-polygon game art style
+- **stylized** - Exaggerated, artistic proportions
+- **semi-realistic** - Blend of realism and stylization
+- **realistic** - Detailed, lifelike appearance
+- **cartoon** - Smooth, rounded cartoon look
+- **geometric** - Clean, hard-edged geometric forms
+- **voxel** - Minecraft-like block-based style
+- **retro** - Classic retro/pixel-art inspired
 
 ### Change output dir
 
