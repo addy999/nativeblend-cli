@@ -306,10 +306,12 @@ class APIClient:
                 return None
 
         final_status = None
+        attempt = 0
 
-        for attempt in range(_MAX_RETRIES + 1):
+        while True:
             ws = None
             error_msg = None
+            connection_was_stable = False
             try:
                 ws = websocket.create_connection(
                     ws_url,
@@ -325,6 +327,8 @@ class APIClient:
                 while True:
                     try:
                         raw = ws.recv()
+                        # Any successful recv means the connection is alive
+                        connection_was_stable = True
                         if not raw:
                             if on_check_tasks:
                                 on_check_tasks()
@@ -350,6 +354,8 @@ class APIClient:
                             on_check_tasks()
 
                     except websocket.WebSocketTimeoutException:
+                        # Staying connected long enough to time out is also stable
+                        connection_was_stable = True
                         if on_check_tasks:
                             on_check_tasks()
                     except websocket.WebSocketConnectionClosedException:
@@ -375,6 +381,11 @@ class APIClient:
                 final_status = rest_status
                 break
 
+            # Reset counter whenever the previous connection was stable so each
+            # new disconnect gets a fresh budget of _MAX_RETRIES attempts.
+            if connection_was_stable:
+                attempt = 0
+
             if attempt >= _MAX_RETRIES:
                 if error_msg:
                     on_log(f"WebSocket error: {error_msg}")
@@ -388,5 +399,6 @@ class APIClient:
                 f"{msg}, reconnecting in {backoff}s (attempt {attempt + 1}/{_MAX_RETRIES})..."
             )
             time.sleep(backoff)
+            attempt += 1
 
         return final_status
