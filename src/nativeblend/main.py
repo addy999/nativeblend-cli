@@ -44,6 +44,7 @@ class BuildStyle(str, Enum):
     geometric = "geometric"
     voxel = "voxel"
     retro = "retro"
+    pixel_art = "pixel-art"
 
 
 # Initialize console for rich output

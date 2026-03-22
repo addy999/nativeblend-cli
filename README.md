@@ -94,6 +94,7 @@ Use `--style` to control the visual aesthetic of your model:
 - **geometric** - Clean, hard-edged geometric forms
 - **voxel** - Minecraft-like block-based style
 - **retro** - Classic retro/pixel-art inspired
+- **pixel-art** - Ultra-low-poly geometry with flat, unlit solid colors from a limited retro console palette
 
 ### Change output dir
 
