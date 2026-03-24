@@ -86,8 +86,7 @@ nativeblend build "a tree" --verbose
 Use `--style` to control the visual aesthetic of your model:
 
 - **auto** - Let the AI decide based on your prompt (default)
-- **low-poly** - Faceted, low-polygon game art style
-- **stylized** - Exaggerated, artistic proportions
+- **low-poly** - Flat-shaded faceted polygons, hard edges, bold solid colors — classic indie game asset style
 - **semi-realistic** - Blend of realism and stylization
 - **realistic** - Detailed, lifelike appearance
 - **cartoon** - Smooth, rounded cartoon look
