@@ -45,6 +45,7 @@ class BuildStyle(str, Enum):
     voxel = "voxel"
     retro = "retro"
     pixel_art = "pixel-art"
+    gamecube = "gamecube"
 
 
 # Initialize console for rich output
