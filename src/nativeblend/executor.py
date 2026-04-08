@@ -41,7 +41,7 @@ def _normalize_blender_script(script: str) -> str:
     """
     # Fix line breaks after assignment operators (=, +=, -=, etc.)
     # Pattern: assignment operator followed by newline and then a non-whitespace character
-    script = re.sub(r"([+\-*/]?=)\s*\n\s*([a-zA-Z_])", r"\1 \2", script)
+    script = re.sub(r"(?<!=)([+\-*/]?=)(?!=)\s*\n\s*([a-zA-Z_])", r"\1 \2", script)
 
     return script
 
@@ -169,13 +169,8 @@ def export_blender_file_local(
             config.get("output.default_dir"), generation_id, "final_output.blend"
         )
     )
-    full_script = f"""
-import bpy
-import os
+    full_script = f"""{script_code}
 
-# --- Your script starts here ---
-{script_code}
-# --- Your script ends here ---
 
 # --- Save the scene as a .blend file ---
 output_file = os.path.abspath({repr(save_path)})

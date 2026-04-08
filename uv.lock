@@ -1,6 +1,10 @@
 version = 1
 revision = 2
 requires-python = ">=3.12"
+resolution-markers = [
+    "python_full_version >= '3.14'",
+    "python_full_version < '3.14'",
+]
 
 [[package]]
 name = "annotated-doc"
@@ -381,9 +385,10 @@ wheels = [
 
 [[package]]
 name = "nativeblend"
-version = "0.1.8"
+version = "0.2.4"
 source = { editable = "." }
 dependencies = [
+    { name = "certifi" },
     { name = "keyring" },
     { name = "requests" },
     { name = "rich" },
@@ -399,6 +404,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "certifi", specifier = ">=2024.0.0" },
     { name = "keyring", specifier = ">=25.5.0" },
     { name = "requests", specifier = ">=2.32.0" },
     { name = "rich", specifier = ">=13.9.4" },
