@@ -176,6 +176,44 @@ def init():
 
             console.print(f"[green]✓[/green] Blender found at: {blender_path}")
 
+        # Check authentication status
+        console.print(f"\n[bold]Checking authentication...[/bold]")
+        api_key = config.get_api_key()
+        authenticated = False
+        if api_key:
+            client = APIClient(api_key=api_key)
+            if client.validate_api_key():
+                console.print(
+                    f"[green]✓[/green] Authenticated (key: {api_key[:8]}...{api_key[-4:]})"
+                )
+                authenticated = True
+            else:
+                console.print(
+                    "[yellow]⚠[/yellow] Stored API key is invalid or the API is unreachable"
+                )
+        else:
+            console.print("[yellow]⚠[/yellow] No API key configured")
+
+        if not authenticated:
+            console.print("[dim]Enter your API key to authenticate now, or press Enter to skip[/dim]")
+            new_key = typer.prompt("NativeBlend API key", default="", show_default=False).strip()
+            if new_key:
+                client = APIClient(api_key=new_key)
+                if client.validate_api_key():
+                    config.set_api_key(new_key)
+                    console.print("[green]✓[/green] Successfully authenticated!")
+                    console.print(
+                        "[dim]Your API key has been securely stored in the system keychain[/dim]"
+                    )
+                else:
+                    console.print(
+                        "[red]✗[/red] Invalid API key — run 'nativeblend auth login' to try again"
+                    )
+            else:
+                console.print(
+                    "[dim]Skipped — run 'nativeblend auth login' to authenticate later[/dim]"
+                )
+
     except Exception as e:
         console.print(f"[red]✗[/red] Failed to initialize config: {e}")
         raise typer.Exit(1)
