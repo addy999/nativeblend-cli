@@ -323,6 +323,22 @@ class APIClient:
         except requests.RequestException:
             return None
 
+    def export_generation(
+        self, generation_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Trigger backend export and get download URLs for .glb and .blend files."""
+        try:
+            response = requests.post(
+                self._url(f"generate/{generation_id}/export"),
+                headers=self._get_headers(),
+                timeout=180,  # Export can take a while
+            )
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except requests.RequestException:
+            return None
+
     def download_file(self, url: str) -> Optional[bytes]:
         """
         Download a file from the given URL and return its content.

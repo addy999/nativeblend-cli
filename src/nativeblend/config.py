@@ -156,6 +156,9 @@ class Config:
         """Get Blender executable path"""
         return self.get("generation.blender_path", DEFAULT_BLENDER_PATH)
 
+    def is_local_blender(self) -> bool:
+        return False
+
     def initialize(self) -> None:
         """Initialize configuration directory and file with defaults"""
         self.config_dir.mkdir(parents=True, exist_ok=True)

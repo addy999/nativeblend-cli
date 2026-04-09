@@ -155,7 +155,8 @@ def init():
         table.add_row("Save Renders", str(config.get("output.save_renders")))
         table.add_row("Default Build Mode", config.get("generation.default_mode"))
         table.add_row("Default Style", config.get("generation.default_style"))
-        table.add_row("Blender Path", config.get("generation.blender_path"))
+        if config.is_local_blender():
+            table.add_row("Blender Path", config.get("generation.blender_path"))
 
         console.print(table)
 
@@ -163,16 +164,17 @@ def init():
             "\n[green]✓[/green]Run 'nativeblend auth login' to authenticate with your API key"
         )
 
-        # Check if Blender exists
-        blender_path = config.get("generation.blender_path")
-        console.print(f"\n[bold]Checking Blender installation...[/bold]")
+        # Check if Blender exists (only when local_blender is enabled)
+        if config.is_local_blender():
+            blender_path = config.get("generation.blender_path")
+            console.print(f"\n[bold]Checking Blender installation...[/bold]")
 
-        if not check_blender_exists(blender_path):
-            console.print()
-            prompt_blender_download()
-            raise typer.Exit(1)
+            if not check_blender_exists(blender_path):
+                console.print()
+                prompt_blender_download()
+                raise typer.Exit(1)
 
-        console.print(f"[green]✓[/green] Blender found at: {blender_path}")
+            console.print(f"[green]✓[/green] Blender found at: {blender_path}")
 
     except Exception as e:
         console.print(f"[red]✗[/red] Failed to initialize config: {e}")
@@ -396,23 +398,25 @@ def build(
         )
         raise typer.Exit(1)
 
-    # Test blender
-    blender_path = config.get_blender_path()
-    if not check_blender_exists(blender_path):
-        prompt_blender_download()
-        raise typer.Exit(1)
+    # Test blender (only when local_blender is enabled)
+    local_blender = config.is_local_blender()
+    if local_blender:
+        blender_path = config.get_blender_path()
+        if not check_blender_exists(blender_path):
+            prompt_blender_download()
+            raise typer.Exit(1)
 
-    result = run_blender_script_local(
-        'import bpy; print("Blender is working")',
-        blender_path=blender_path,
-        timeout=10,
-    )
-    if "error" in result:
-        console.print(f"[red]✗[/red] Failed to test Blender: {result['error']}")
-        console.print(
-            "[dim]Please ensure Blender is properly installed and the path is correct[/dim]"
+        result = run_blender_script_local(
+            'import bpy; print("Blender is working")',
+            blender_path=blender_path,
+            timeout=10,
         )
-        raise typer.Exit(1)
+        if "error" in result:
+            console.print(f"[red]✗[/red] Failed to test Blender: {result['error']}")
+            console.print(
+                "[dim]Please ensure Blender is properly installed and the path is correct[/dim]"
+            )
+            raise typer.Exit(1)
 
     # Now, let's build.
     # Fall back to config defaults when not provided on the CLI
@@ -467,7 +471,7 @@ def build(
     os.makedirs(output_path, exist_ok=True)
 
     # Inline task execution: check for and run Blender tasks during log streaming
-    blender_path = config.get_blender_path()
+    blender_path = config.get_blender_path() if local_blender else None
 
     def _describe_task(artifact_path: str) -> str:
         """Return a human-friendly label based on the artifact file extension."""
@@ -588,13 +592,15 @@ def build(
     _executed_local_tasks = False
 
     def check_and_execute_tasks() -> None:
-        """Check for pending tasks and execute them inline.
+        """Check for pending tasks and execute them inline (local_blender only).
 
         Loops until the server has no more pending tasks, so that tasks
         created while Blender is running are never silently dropped.
         A re-entrancy guard prevents double-claiming if a WebSocket message
         arrives while we are already inside this function.
         """
+        if not local_blender:
+            return
         nonlocal _executing_tasks
         if _executing_tasks:
             return
@@ -693,13 +699,32 @@ def build(
         code = final_result.get("code", "")
         elapsed_time = final_result.get("elapsed_time", 0)
 
-        console.print(f"[cyan]→[/cyan] Building Blender file...")
-        blender_path = export_blender_file_local(code, generation_id)
-        console.print(f"[green]✓[/green] Blender file saved to: {blender_path}")
+        if local_blender:
+            console.print(f"[cyan]→[/cyan] Building Blender file...")
+            blender_save_path = export_blender_file_local(code, generation_id)
+            console.print(f"[green]✓[/green] Blender file saved to: {blender_save_path}")
 
-        console.print(f"[cyan]→[/cyan] Building model file...")
-        model_path = export_glb_local(code, generation_id)
-        console.print(f"[green]✓[/green] Model file saved to: {model_path}")
+            console.print(f"[cyan]→[/cyan] Building model file...")
+            model_path = export_glb_local(code, generation_id)
+            console.print(f"[green]✓[/green] Model file saved to: {model_path}")
+        else:
+            console.print(f"[cyan]→[/cyan] Exporting model files...")
+            export_result = client.export_generation(generation_id)
+            if export_result:
+                for key, label, filename in [
+                    ("model_url", "Model", "final_output.glb"),
+                    ("blender_url", "Blender", "final_output.blend"),
+                ]:
+                    url = export_result.get(key)
+                    if url:
+                        data = client.download_file(url)
+                        if data:
+                            save_path = os.path.join(output_path, filename)
+                            with open(save_path, "wb") as f:
+                                f.write(data)
+                            console.print(f"[green]✓[/green] {label} file saved to: {save_path}")
+            else:
+                console.print("[yellow]⚠[/yellow] Failed to export files from server")
 
         # Show success message
         console.print()
@@ -860,8 +885,8 @@ def gen_download(
         selected_steps.add(step)
 
     # Download selected checkpoints
-    blender_path = config.get_blender_path()
-    blender_available = check_blender_exists(blender_path)
+    local_blender = config.is_local_blender()
+    blender_available = local_blender and check_blender_exists(config.get_blender_path())
 
     for idx in indices:
         cp = checkpoints[idx]
@@ -875,7 +900,7 @@ def gen_download(
             f.write(code)
         console.print(f"[green]✓[/green] Saved code: {code_filename}")
 
-        # Export .blend and .glb files if Blender is available
+        # Export .blend and .glb files if local Blender is available
         if blender_available:
             try:
                 blend_filename = f"checkpoint-{step}-{idx + 1}.blend"
@@ -896,10 +921,6 @@ def gen_download(
                 console.print(f"[green]✓[/green] Saved: {glb_path}")
             except Exception as e:
                 console.print(f"[yellow]⚠[/yellow] Failed to export .glb: {e}")
-        else:
-            console.print(
-                f"[dim]Skipping .blend/.glb export (Blender not found). Code saved as {code_filename}[/dim]"
-            )
 
     # Download images only for selected checkpoints (skip for "latest only")
     if artifacts and not is_latest_only:
