@@ -310,7 +310,7 @@ class APIClient:
     def get_generation_checkpoints(
         self, generation_id: str
     ) -> Optional[list]:
-        """Get checkpoint code snapshots for a generation."""
+        """Get checkpoint metadata for a generation (no code)."""
         try:
             response = requests.get(
                 self._url(f"generate/{generation_id}/checkpoints"),
@@ -319,6 +319,24 @@ class APIClient:
             )
             if response.status_code == 200:
                 return response.json().get("checkpoints", [])
+            return None
+        except requests.RequestException:
+            return None
+
+    def export_checkpoint(
+        self, generation_id: str, checkpoint_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Trigger backend export of a checkpoint. Returns download URLs for files."""
+        try:
+            response = requests.post(
+                self._url(
+                    f"generate/{generation_id}/checkpoints/{checkpoint_id}/export"
+                ),
+                headers=self._get_headers(),
+                timeout=300,  # Blender exports can be slow
+            )
+            if response.status_code == 200:
+                return response.json()
             return None
         except requests.RequestException:
             return None

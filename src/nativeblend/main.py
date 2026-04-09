@@ -858,30 +858,22 @@ def gen_list(
 def gen_download(
     generation_id: str = typer.Argument(help="Generation ID to download"),
 ):
-    """Download checkpoint files and renders for a generation."""
+    """Download checkpoint files and renders for a generation.
+
+    The backend handles all exports — no local Blender required.
+    """
     import questionary
 
     client = APIClient()
     output_path = os.path.join(config.get("output.default_dir"), generation_id)
     os.makedirs(output_path, exist_ok=True)
 
-    # Fetch checkpoints and artifacts
+    # Fetch checkpoint metadata
     console.print("[cyan]→[/cyan] Fetching generation data...")
     checkpoints = client.get_generation_checkpoints(generation_id)
-    artifacts = client.get_generation_artifacts(generation_id)
 
     if not checkpoints:
         console.print("[yellow]No checkpoints found for this generation[/yellow]")
-        # Still download images if available
-        if artifacts:
-            console.print(f"[cyan]→[/cyan] Downloading {len(artifacts)} render image(s)...")
-            for artifact in artifacts:
-                data = client.download_file(artifact["url"])
-                if data:
-                    path = os.path.join(output_path, artifact["name"])
-                    with open(path, "wb") as f:
-                        f.write(data)
-            console.print(f"[green]✓[/green] Images saved to {output_path}")
         raise typer.Exit()
 
     # Build choices for multi-select
@@ -905,80 +897,72 @@ def gen_download(
         console.print("[yellow]No checkpoints selected[/yellow]")
         raise typer.Exit()
 
-    # Resolve selection
+    is_latest_only = "latest" in selected and "all" not in selected
+
+    # "Latest" uses the final code from the generation record, not a checkpoint
+    if is_latest_only:
+        console.print("[cyan]→[/cyan] Exporting final generation output...")
+        export_result = client.export_generation(generation_id)
+
+        if not export_result:
+            console.print("[yellow]⚠[/yellow] Failed to export generation")
+            raise typer.Exit(1)
+
+        if export_result.get("model_url"):
+            data = client.download_file(export_result["model_url"])
+            if data:
+                with open(os.path.join(output_path, "final_output.glb"), "wb") as f:
+                    f.write(data)
+                console.print("[green]✓[/green] Saved: final_output.glb")
+
+        if export_result.get("blender_url"):
+            data = client.download_file(export_result["blender_url"])
+            if data:
+                with open(os.path.join(output_path, "final_output.blend"), "wb") as f:
+                    f.write(data)
+                console.print("[green]✓[/green] Saved: final_output.blend")
+
+        console.print(
+            f"\n[green]✓[/green] Files saved to: [cyan]{output_path}[/cyan]"
+        )
+        raise typer.Exit()
+
+    # Resolve selection to indices for checkpoint exports
     if "all" in selected:
         indices = list(range(len(checkpoints)))
-    elif "latest" in selected:
-        indices = [len(checkpoints) - 1]
     else:
         indices = [s for s in selected if isinstance(s, int)]
 
-    # Determine if we need images (not needed for "latest only")
-    is_latest_only = "latest" in selected and "all" not in selected
-
-    # Collect step prefixes for selected checkpoints to filter images
-    selected_steps: set = set()
-    for idx in indices:
-        step = checkpoints[idx].get("step", "unknown")
-        selected_steps.add(step)
-
-    # Download selected checkpoints
-    local_blender = config.is_local_blender()
-    blender_available = local_blender and check_blender_exists(config.get_blender_path())
-
+    # Export and download each selected checkpoint via the backend
     for idx in indices:
         cp = checkpoints[idx]
         step = cp.get("step", "unknown")
-        code = cp["code"]
+        cp_id = cp["id"]
 
-        # Save code file
-        code_filename = f"checkpoint-{step}-{idx + 1}.py"
-        code_path = os.path.join(output_path, code_filename)
-        with open(code_path, "w") as f:
-            f.write(code)
-        console.print(f"[green]✓[/green] Saved code: {code_filename}")
+        console.print(f"[cyan]→[/cyan] Exporting checkpoint {idx + 1} ({step})...")
+        export_result = client.export_checkpoint(generation_id, cp_id)
 
-        # Export .blend and .glb files if local Blender is available
-        if blender_available:
-            try:
-                blend_filename = f"checkpoint-{step}-{idx + 1}.blend"
-                console.print(f"[cyan]→[/cyan] Exporting {blend_filename}...")
-                blend_path = export_blender_file_local(
-                    code, generation_id, filename=blend_filename
-                )
-                console.print(f"[green]✓[/green] Saved: {blend_path}")
-            except Exception as e:
-                console.print(f"[yellow]⚠[/yellow] Failed to export .blend: {e}")
+        if not export_result:
+            console.print(f"[yellow]⚠[/yellow] Failed to export checkpoint {idx + 1}")
+            continue
 
-            try:
-                glb_filename = f"checkpoint-{step}-{idx + 1}.glb"
-                console.print(f"[cyan]→[/cyan] Exporting {glb_filename}...")
-                glb_path = export_glb_local(
-                    code, generation_id, filename=glb_filename
-                )
-                console.print(f"[green]✓[/green] Saved: {glb_path}")
-            except Exception as e:
-                console.print(f"[yellow]⚠[/yellow] Failed to export .glb: {e}")
+        # Download .glb
+        if export_result.get("model_url"):
+            data = client.download_file(export_result["model_url"])
+            if data:
+                filename = f"checkpoint-{step}-{idx + 1}.glb"
+                with open(os.path.join(output_path, filename), "wb") as f:
+                    f.write(data)
+                console.print(f"[green]✓[/green] Saved: {filename}")
 
-    # Download images only for selected checkpoints (skip for "latest only")
-    if artifacts and not is_latest_only:
-        # Filter artifacts to only those matching selected checkpoint steps
-        # Image names follow pattern: {step}-{revision}.png, {step}-{revision}-behind.png
-        matching = [
-            a for a in artifacts
-            if any(a.get("name", "").startswith(step) for step in selected_steps)
-        ]
-        if matching:
-            console.print(f"[cyan]→[/cyan] Downloading {len(matching)} render image(s)...")
-            downloaded = 0
-            for artifact in matching:
-                data = client.download_file(artifact["url"])
-                if data:
-                    path = os.path.join(output_path, artifact["name"])
-                    with open(path, "wb") as f:
-                        f.write(data)
-                    downloaded += 1
-            console.print(f"[green]✓[/green] Downloaded {downloaded} image(s)")
+        # Download .blend
+        if export_result.get("blender_url"):
+            data = client.download_file(export_result["blender_url"])
+            if data:
+                filename = f"checkpoint-{step}-{idx + 1}.blend"
+                with open(os.path.join(output_path, filename), "wb") as f:
+                    f.write(data)
+                console.print(f"[green]✓[/green] Saved: {filename}")
 
     console.print(
         f"\n[green]✓[/green] Files saved to: [cyan]{output_path}[/cyan]"
