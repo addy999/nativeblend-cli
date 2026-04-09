@@ -246,6 +246,34 @@ class APIClient:
         except requests.RequestException:
             return False
 
+    def resume_generation(self, generation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Resume an interrupted generation from its last checkpoint.
+
+        Args:
+            generation_id: The ID of the generation to resume
+
+        Returns:
+            Dictionary with generation_id and status, or error info if failed
+        """
+        try:
+            response = requests.post(
+                self._url(f"generate/{generation_id}/resume"),
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                try:
+                    error_detail = response.json().get("detail", response.text)
+                except Exception:
+                    error_detail = response.text or f"HTTP {response.status_code}"
+                return {"error": error_detail, "status_code": response.status_code}
+        except requests.RequestException as e:
+            return {"error": str(e)}
+
     def download_file(self, url: str) -> Optional[bytes]:
         """
         Download a file from the given URL and return its content.
