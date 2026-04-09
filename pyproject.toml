@@ -26,6 +26,7 @@ dependencies = [
     "rich>=13.9.4",
     "websocket-client>=1.8.0",
     "certifi>=2024.0.0",
+    "questionary>=2.0.0",
 ]
 
 [project.urls]

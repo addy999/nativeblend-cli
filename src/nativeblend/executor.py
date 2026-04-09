@@ -161,12 +161,13 @@ bpy.ops.object.delete()
 def export_blender_file_local(
     script_code: str,
     generation_id: str,
+    filename: str = "final_output.blend",
 ) -> str:
     """Executes a Blender Python script and saves the resulting scene as a .blend file."""
 
     save_path = os.path.abspath(
         os.path.join(
-            config.get("output.default_dir"), generation_id, "final_output.blend"
+            config.get("output.default_dir"), generation_id, filename
         )
     )
     full_script = f"""{script_code}
@@ -191,12 +192,13 @@ print(f"Scene saved to {{output_file}}")
 def export_glb_local(
     script_code: str,
     generation_id: str,
+    filename: str = "final_output.glb",
 ) -> str:
     """Executes a Blender Python script and exports the scene as a GLB file."""
 
     save_path = os.path.abspath(
         os.path.join(
-            config.get("output.default_dir"), generation_id, "final_output.glb"
+            config.get("output.default_dir"), generation_id, filename
         )
     )
     full_script = f"""{script_code}

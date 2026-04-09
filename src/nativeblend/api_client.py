@@ -274,6 +274,55 @@ class APIClient:
         except requests.RequestException as e:
             return {"error": str(e)}
 
+    def list_generations(
+        self, page: int = 1, per_page: int = 20
+    ) -> Optional[Dict[str, Any]]:
+        """List the current user's generations with pagination."""
+        try:
+            response = requests.get(
+                self._url("cli/generations"),
+                headers=self._get_headers(),
+                params={"page": page, "per_page": per_page},
+                timeout=self.timeout,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except requests.RequestException:
+            return None
+
+    def get_generation_artifacts(
+        self, generation_id: str
+    ) -> Optional[list]:
+        """Get all artifacts (images, etc.) for a generation."""
+        try:
+            response = requests.get(
+                self._url(f"generate/{generation_id}/artifacts"),
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+            if response.status_code == 200:
+                return response.json().get("artifacts", [])
+            return None
+        except requests.RequestException:
+            return None
+
+    def get_generation_checkpoints(
+        self, generation_id: str
+    ) -> Optional[list]:
+        """Get checkpoint code snapshots for a generation."""
+        try:
+            response = requests.get(
+                self._url(f"generate/{generation_id}/checkpoints"),
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+            if response.status_code == 200:
+                return response.json().get("checkpoints", [])
+            return None
+        except requests.RequestException:
+            return None
+
     def download_file(self, url: str) -> Optional[bytes]:
         """
         Download a file from the given URL and return its content.

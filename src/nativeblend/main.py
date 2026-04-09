@@ -66,6 +66,10 @@ app.add_typer(auth_app, name="auth")
 config_app = typer.Typer(help="Manage configuration settings")
 app.add_typer(config_app, name="config")
 
+# Generations subcommand group
+gen_app = typer.Typer(help="Browse and manage generations")
+app.add_typer(gen_app, name="generations")
+
 
 def _version_tuple(v: str) -> tuple:
     try:
@@ -527,6 +531,10 @@ def build(
             task_output = result.get("output", "")
             task_error = result.get("error")
 
+            if task_status_str == "completed":
+                nonlocal _executed_local_tasks
+                _executed_local_tasks = True
+
             console.print(f"[green]✓[/green] {label} done")
 
             # Upload result with artifact
@@ -577,6 +585,7 @@ def build(
             console.print(f"[green]✓[/green] {label} done")
 
     _executing_tasks = False
+    _executed_local_tasks = False
 
     def check_and_execute_tasks() -> None:
         """Check for pending tasks and execute them inline.
@@ -602,6 +611,36 @@ def build(
         finally:
             _executing_tasks = False
 
+    # Real-time artifact polling: download renders as they're produced on the backend
+    _already_downloaded: set = set()
+
+    def check_and_download_artifacts() -> None:
+        """Poll for new artifacts and download them to output_path."""
+        if _executed_local_tasks:
+            return  # Images already saved locally by inline execution
+        try:
+            artifacts = client.get_generation_artifacts(generation_id)
+            if not artifacts:
+                return
+            for artifact in artifacts:
+                name = artifact.get("name", "")
+                if name in _already_downloaded:
+                    continue
+                data = client.download_file(artifact["url"])
+                if data:
+                    artifact_path = os.path.join(output_path, name)
+                    with open(artifact_path, "wb") as f:
+                        f.write(data)
+                    _already_downloaded.add(name)
+                    console.print(f"[green]✓[/green] Saved render: {name}")
+        except Exception:
+            pass  # Non-blocking — don't interrupt the build
+
+    def on_check_all() -> None:
+        """Combined callback: check tasks then poll artifacts."""
+        check_and_execute_tasks()
+        check_and_download_artifacts()
+
     try:
         # Stream logs in real-time via WebSocket
         with console.status("[cyan]→[/cyan] Building..."):
@@ -616,7 +655,7 @@ def build(
             task_status = client.stream_generation_logs(
                 generation_id,
                 handle_log,
-                on_check_tasks=check_and_execute_tasks,
+                on_check_tasks=on_check_all,
             )
 
         if not task_status:
@@ -638,6 +677,9 @@ def build(
         else:
             console.print(f"[red]✗[/red] Failed to cancel build {generation_id}")
         raise typer.Exit(1)
+
+    # Final artifact poll to catch any last images
+    check_and_download_artifacts()
 
     # Get final result
     if task_status == "SUCCESS":
@@ -690,3 +732,195 @@ def build(
     elif task_status == "REVOKED":
         console.print("[yellow]⚠[/yellow] Build timed out or was cancelled")
         raise typer.Exit(1)
+
+
+# ---- Generations subcommands ----
+
+
+@gen_app.command("list")
+def gen_list(
+    page: int = typer.Option(1, "--page", "-p", help="Page number"),
+    per_page: int = typer.Option(20, "--per-page", "-n", help="Items per page"),
+):
+    """List your generations."""
+    client = APIClient()
+    result = client.list_generations(page=page, per_page=per_page)
+
+    if not result or not result.get("generations"):
+        console.print("[yellow]No generations found[/yellow]")
+        raise typer.Exit()
+
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Prompt", max_width=50)
+    table.add_column("Status")
+    table.add_column("Mode")
+    table.add_column("Created")
+
+    for gen in result["generations"]:
+        status = gen.get("status", "")
+        status_style = {
+            "SUCCESS": "[green]SUCCESS[/green]",
+            "FAILURE": "[red]FAILURE[/red]",
+            "PENDING": "[yellow]PENDING[/yellow]",
+            "PROCESSING": "[cyan]PROCESSING[/cyan]",
+            "REVOKED": "[dim]REVOKED[/dim]",
+        }.get(status, status)
+
+        prompt_text = gen.get("prompt", "")
+        if len(prompt_text) > 50:
+            prompt_text = prompt_text[:47] + "..."
+
+        table.add_row(
+            gen["id"],
+            prompt_text,
+            status_style,
+            gen.get("mode", ""),
+            gen.get("created", "")[:19],  # Trim timezone
+        )
+
+    total = result.get("total", 0)
+    total_pages = (total + per_page - 1) // per_page
+    console.print(table)
+    console.print(
+        f"\n[dim]Page {page} of {total_pages} ({total} total)[/dim]"
+    )
+    if page < total_pages:
+        console.print(
+            f"[dim]Next page: nativeblend generations list --page {page + 1}[/dim]"
+        )
+
+
+@gen_app.command("download")
+def gen_download(
+    generation_id: str = typer.Argument(help="Generation ID to download"),
+):
+    """Download checkpoint files and renders for a generation."""
+    import questionary
+
+    client = APIClient()
+    output_path = os.path.join(config.get("output.default_dir"), generation_id)
+    os.makedirs(output_path, exist_ok=True)
+
+    # Fetch checkpoints and artifacts
+    console.print("[cyan]→[/cyan] Fetching generation data...")
+    checkpoints = client.get_generation_checkpoints(generation_id)
+    artifacts = client.get_generation_artifacts(generation_id)
+
+    if not checkpoints:
+        console.print("[yellow]No checkpoints found for this generation[/yellow]")
+        # Still download images if available
+        if artifacts:
+            console.print(f"[cyan]→[/cyan] Downloading {len(artifacts)} render image(s)...")
+            for artifact in artifacts:
+                data = client.download_file(artifact["url"])
+                if data:
+                    path = os.path.join(output_path, artifact["name"])
+                    with open(path, "wb") as f:
+                        f.write(data)
+            console.print(f"[green]✓[/green] Images saved to {output_path}")
+        raise typer.Exit()
+
+    # Build choices for multi-select
+    choices = []
+    for i, cp in enumerate(checkpoints):
+        step = cp.get("step", "unknown")
+        created = cp.get("created", "")[:19]
+        label = f"[{i + 1}] {step} — {created}"
+        choices.append(questionary.Choice(title=label, value=i))
+
+    # Add convenience options
+    choices.insert(0, questionary.Choice(title="Latest only", value="latest"))
+    choices.insert(0, questionary.Choice(title="All checkpoints", value="all"))
+
+    selected = questionary.checkbox(
+        "Select checkpoints to download:",
+        choices=choices,
+    ).ask()
+
+    if not selected:
+        console.print("[yellow]No checkpoints selected[/yellow]")
+        raise typer.Exit()
+
+    # Resolve selection
+    if "all" in selected:
+        indices = list(range(len(checkpoints)))
+    elif "latest" in selected:
+        indices = [len(checkpoints) - 1]
+    else:
+        indices = [s for s in selected if isinstance(s, int)]
+
+    # Determine if we need images (not needed for "latest only")
+    is_latest_only = "latest" in selected and "all" not in selected
+
+    # Collect step prefixes for selected checkpoints to filter images
+    selected_steps: set = set()
+    for idx in indices:
+        step = checkpoints[idx].get("step", "unknown")
+        selected_steps.add(step)
+
+    # Download selected checkpoints
+    blender_path = config.get_blender_path()
+    blender_available = check_blender_exists(blender_path)
+
+    for idx in indices:
+        cp = checkpoints[idx]
+        step = cp.get("step", "unknown")
+        code = cp["code"]
+
+        # Save code file
+        code_filename = f"checkpoint-{step}-{idx + 1}.py"
+        code_path = os.path.join(output_path, code_filename)
+        with open(code_path, "w") as f:
+            f.write(code)
+        console.print(f"[green]✓[/green] Saved code: {code_filename}")
+
+        # Export .blend and .glb files if Blender is available
+        if blender_available:
+            try:
+                blend_filename = f"checkpoint-{step}-{idx + 1}.blend"
+                console.print(f"[cyan]→[/cyan] Exporting {blend_filename}...")
+                blend_path = export_blender_file_local(
+                    code, generation_id, filename=blend_filename
+                )
+                console.print(f"[green]✓[/green] Saved: {blend_path}")
+            except Exception as e:
+                console.print(f"[yellow]⚠[/yellow] Failed to export .blend: {e}")
+
+            try:
+                glb_filename = f"checkpoint-{step}-{idx + 1}.glb"
+                console.print(f"[cyan]→[/cyan] Exporting {glb_filename}...")
+                glb_path = export_glb_local(
+                    code, generation_id, filename=glb_filename
+                )
+                console.print(f"[green]✓[/green] Saved: {glb_path}")
+            except Exception as e:
+                console.print(f"[yellow]⚠[/yellow] Failed to export .glb: {e}")
+        else:
+            console.print(
+                f"[dim]Skipping .blend/.glb export (Blender not found). Code saved as {code_filename}[/dim]"
+            )
+
+    # Download images only for selected checkpoints (skip for "latest only")
+    if artifacts and not is_latest_only:
+        # Filter artifacts to only those matching selected checkpoint steps
+        # Image names follow pattern: {step}-{revision}.png, {step}-{revision}-behind.png
+        matching = [
+            a for a in artifacts
+            if any(a.get("name", "").startswith(step) for step in selected_steps)
+        ]
+        if matching:
+            console.print(f"[cyan]→[/cyan] Downloading {len(matching)} render image(s)...")
+            downloaded = 0
+            for artifact in matching:
+                data = client.download_file(artifact["url"])
+                if data:
+                    path = os.path.join(output_path, artifact["name"])
+                    with open(path, "wb") as f:
+                        f.write(data)
+                    downloaded += 1
+            console.print(f"[green]✓[/green] Downloaded {downloaded} image(s)")
+
+    console.print(
+        f"\n[green]✓[/green] Files saved to: [cyan]{output_path}[/cyan]"
+    )
