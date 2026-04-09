@@ -857,50 +857,21 @@ def gen_list(
 @gen_app.command("download")
 def gen_download(
     generation_id: str = typer.Argument(help="Generation ID to download"),
+    select: bool = typer.Option(
+        False, "--select", "-s", help="Interactively select individual checkpoints"
+    ),
 ):
-    """Download checkpoint files and renders for a generation.
+    """Download model files for a generation.
 
-    The backend handles all exports — no local Blender required.
+    By default downloads the final .glb and .blend files. Use --select to
+    interactively pick individual build checkpoints instead.
     """
-    import questionary
-
     client = APIClient()
     output_path = os.path.join(config.get("output.default_dir"), generation_id)
     os.makedirs(output_path, exist_ok=True)
 
-    # Fetch checkpoint metadata
-    console.print("[cyan]→[/cyan] Fetching generation data...")
-    checkpoints = client.get_generation_checkpoints(generation_id)
-
-    if not checkpoints:
-        console.print("[yellow]No checkpoints found for this generation[/yellow]")
-        raise typer.Exit()
-
-    # Build choices for multi-select
-    choices = []
-    for i, cp in enumerate(checkpoints):
-        step = cp.get("step", "unknown")
-        created = cp.get("created", "")[:19]
-        label = f"[{i + 1}] {step} — {created}"
-        choices.append(questionary.Choice(title=label, value=i))
-
-    # Add convenience options
-    choices.insert(0, questionary.Choice(title="Latest only", value="latest"))
-    choices.insert(0, questionary.Choice(title="All checkpoints", value="all"))
-
-    selected = questionary.checkbox(
-        "Select checkpoints to download:",
-        choices=choices,
-    ).ask()
-
-    if not selected:
-        console.print("[yellow]No checkpoints selected[/yellow]")
-        raise typer.Exit()
-
-    is_latest_only = "latest" in selected and "all" not in selected
-
-    # "Latest" uses the final code from the generation record, not a checkpoint
-    if is_latest_only:
+    if not select:
+        # Default: download the final exported model
         console.print("[cyan]→[/cyan] Exporting final generation output...")
         export_result = client.export_generation(generation_id)
 
@@ -925,9 +896,59 @@ def gen_download(
         console.print(
             f"\n[green]✓[/green] Files saved to: [cyan]{output_path}[/cyan]"
         )
+        return
+
+    # --select mode: interactive checkpoint picker
+    import questionary
+
+    console.print("[cyan]→[/cyan] Fetching generation data...")
+    checkpoints = client.get_generation_checkpoints(generation_id)
+
+    if not checkpoints:
+        console.print("[yellow]No checkpoints found for this generation[/yellow]")
         raise typer.Exit()
 
-    # Resolve selection to indices for checkpoint exports
+    # Build choices for multi-select
+    choices = []
+    for i, cp in enumerate(checkpoints):
+        step = cp.get("step", "unknown")
+        created = cp.get("created", "")[:19]
+        label = f"[{i + 1}] {step} — {created}"
+        choices.append(questionary.Choice(title=label, value=i))
+
+    choices.insert(0, questionary.Choice(title="Latest (final output)", value="latest"))
+    choices.insert(0, questionary.Choice(title="All checkpoints", value="all"))
+
+    selected = questionary.checkbox(
+        "Select checkpoints to download:",
+        choices=choices,
+    ).ask()
+
+    if not selected:
+        console.print("[yellow]No checkpoints selected[/yellow]")
+        raise typer.Exit()
+
+    # Handle "latest" — export final generation output
+    if "latest" in selected:
+        console.print("[cyan]→[/cyan] Exporting final generation output...")
+        export_result = client.export_generation(generation_id)
+        if export_result:
+            if export_result.get("model_url"):
+                data = client.download_file(export_result["model_url"])
+                if data:
+                    with open(os.path.join(output_path, "final_output.glb"), "wb") as f:
+                        f.write(data)
+                    console.print("[green]✓[/green] Saved: final_output.glb")
+            if export_result.get("blender_url"):
+                data = client.download_file(export_result["blender_url"])
+                if data:
+                    with open(os.path.join(output_path, "final_output.blend"), "wb") as f:
+                        f.write(data)
+                    console.print("[green]✓[/green] Saved: final_output.blend")
+        else:
+            console.print("[yellow]⚠[/yellow] Failed to export final output")
+
+    # Resolve checkpoint indices
     if "all" in selected:
         indices = list(range(len(checkpoints)))
     else:
