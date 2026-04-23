@@ -30,6 +30,7 @@ from .executor import (
 from .agent.runner import run_agent
 from .agent.states import AgentState, Progress
 
+
 class BuildMode(str, Enum):
     express = "express"
     standard = "standard"
@@ -197,8 +198,12 @@ def init():
             console.print("[yellow]⚠[/yellow] No API key configured")
 
         if not authenticated:
-            console.print("[dim]Enter your API key to authenticate now, or press Enter to skip[/dim]")
-            new_key = typer.prompt("NativeBlend API key", default="", show_default=False).strip()
+            console.print(
+                "[dim]Enter your API key to authenticate now, or press Enter to skip[/dim]"
+            )
+            new_key = typer.prompt(
+                "NativeBlend API key", default="", show_default=False
+            ).strip()
             if new_key:
                 client = APIClient(api_key=new_key)
                 if client.validate_api_key():
@@ -423,8 +428,11 @@ def _build_local(
 
     # Set up output directory
     import uuid
+
     generation_id = str(uuid.uuid4())[:8]
-    output_dir = os.path.join(config.get("output.default_dir"), f"local_{generation_id}")
+    output_dir = os.path.join(
+        config.get("output.default_dir"), f"local_{generation_id}"
+    )
     os.makedirs(output_dir, exist_ok=True)
 
     console.print(f"[dim]Output directory: {output_dir}[/dim]")
@@ -447,22 +455,24 @@ def _build_local(
             console.print(f"[dim]{msg}[/dim]")
         else:
             # Only show important messages in non-verbose mode
-            if any(kw in msg.lower() for kw in ["error", "phase", "rendering", "exporting", "complete", "session"]):
+            if any(
+                kw in msg.lower()
+                for kw in [
+                    "error",
+                    "phase",
+                    "rendering",
+                    "exporting",
+                    "complete",
+                    "session",
+                ]
+            ):
                 console.print(f"[cyan]→[/cyan] {msg}")
 
     def on_progress(step_name: str, progress: Optional[Progress]) -> None:
-        if progress and progress.stage:
-            stage_label = {
-                "geometry": "Building geometry",
-                "materials": "Applying materials",
-                "polish": "Polishing",
-            }.get(progress.stage, progress.stage)
-            if progress.total_phases > 0:
-                console.print(
-                    f"[cyan]→[/cyan] {stage_label} (phase {progress.phase}/{progress.total_phases}): {step_name}"
-                )
-            else:
-                console.print(f"[cyan]→[/cyan] {stage_label}: {step_name}")
+        if progress and progress.total_phases > 0:
+            console.print(
+                f"[cyan]→[/cyan] Phase {progress.phase}/{progress.total_phases}: {step_name}"
+            )
         else:
             console.print(f"[cyan]→[/cyan] {step_name}")
 
@@ -482,6 +492,7 @@ def _build_local(
         console.print(f"[red]✗[/red] Generation failed: {e}")
         if verbose:
             import traceback
+
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         raise typer.Exit(1)
 
@@ -512,6 +523,354 @@ def _build_local(
             border_style="green",
         )
     )
+
+
+def _build_cloud(
+    prompt: str,
+    image_url: Optional[str],
+    mode: str,
+    style: str,
+    verbose: bool = False,
+) -> None:
+    """Legacy cloud-based generation (v1 API). Used with --cloud flag."""
+
+    # Check if local Blender is configured for inline task execution
+    local_blender = config.is_local_blender()
+    if local_blender:
+        blender_path = config.get_blender_path()
+        if not check_blender_exists(blender_path):
+            prompt_blender_download()
+            raise typer.Exit(1)
+
+        result = run_blender_script_local(
+            'import bpy; print("Blender is working")',
+            blender_path=blender_path,
+            timeout=10,
+        )
+        if "error" in result:
+            console.print(f"[red]✗[/red] Failed to test Blender: {result['error']}")
+            console.print(
+                "[dim]Please ensure Blender is properly installed and the path is correct[/dim]"
+            )
+            raise typer.Exit(1)
+
+    # Initialize API client
+    client = APIClient()
+
+    # Submit build request
+    console.print("[cyan]→[/cyan] Submitting build request...")
+    gen_result: Optional[Dict[str, Any]] = client.submit_generation(
+        prompt=prompt,
+        image_url=image_url,
+        mode=mode,
+        style=style,
+    )
+
+    if not gen_result or "error" in gen_result:
+        error_msg = gen_result.get("error") if gen_result else "Unknown error"
+        console.print(f"[red]✗[/red] Failed to submit build request: {error_msg}")
+        raise typer.Exit(1)
+
+    generation_id = gen_result["generation_id"]
+    console.print(f"[green]✓[/green] Build started (ID: [cyan]{generation_id}[/cyan])")
+
+    output_path = os.path.join(config.get("output.default_dir"), generation_id)
+    console.print(
+        f"[dim]You can view progress files and renders in:[/dim] [cyan]{output_path}/[/cyan]"
+    )
+    os.makedirs(output_path, exist_ok=True)
+
+    # Inline task execution: check for and run Blender tasks during log streaming
+    blender_path_for_tasks = config.get_blender_path() if local_blender else None
+
+    def _describe_task(artifact_path: str) -> str:
+        """Return a human-friendly label based on the artifact file extension."""
+        if not artifact_path:
+            return "Processing in Blender"
+        lower = artifact_path.lower()
+        if lower.endswith(".glb") or lower.endswith(".gltf"):
+            return "Exporting model"
+        if lower.endswith(".blend"):
+            return "Saving Blender file"
+        if lower.endswith((".png", ".jpg", ".jpeg")) and "behind" not in lower:
+            return "Rendering preview"
+        return "Processing in Blender"
+
+    _executing_tasks = False
+    _executed_local_tasks = False
+
+    def execute_task_inline(task: dict) -> None:
+        """Execute a single Blender task inline."""
+        nonlocal _executed_local_tasks
+
+        task_id = task.get("id")
+        assert task_id, "Task must have an ID"
+
+        # Claim the task
+        task_data = client.claim_task(task_id)
+        if not task_data:
+            console.print(f"[yellow]⚠[/yellow] Failed to claim task")
+            return
+
+        code = task_data.get("code", "")
+        artifact_path = task_data.get("artifact_path", "")
+        generation = task_data.get("generation", "")
+
+        if not generation:
+            console.print(f"[yellow]⚠[/yellow] Skipping task: missing generation ID")
+            return
+
+        label = _describe_task(artifact_path)
+        console.print(f"[cyan]→[/cyan] {label}...")
+
+        try:
+            # Replace artifact_path with a local path
+            if artifact_path:
+                filename = os.path.basename(artifact_path)
+                new_artifact_path = os.path.abspath(
+                    os.path.join(config.get("output.default_dir"), generation, filename)
+                )
+                # Normalize path to use forward slashes (works on Windows and avoids escape sequence issues)
+                new_artifact_path_normalized = new_artifact_path.replace("\\", "/")
+                result = run_blender_script_local(
+                    code.replace(artifact_path, new_artifact_path_normalized),
+                    timeout=120,
+                    blender_path=blender_path_for_tasks,  # type: ignore
+                    artifact_path=new_artifact_path,
+                )
+            else:
+                result = run_blender_script_local(
+                    code,
+                    timeout=120,
+                    blender_path=blender_path_for_tasks,  # type: ignore
+                )
+
+            task_status_str = "failed" if result.get("error") else "completed"
+            task_output = result.get("output", "")
+            task_error = result.get("error")
+
+            if task_status_str == "completed":
+                _executed_local_tasks = True
+
+            console.print(f"[green]✓[/green] {label} done")
+
+            # Upload result with artifact
+            artifact_file = None
+            try:
+                if result.get("artifact_path"):
+                    artifact_file = open(result["artifact_path"], "rb")
+
+                client.completed(
+                    task_id,
+                    status=task_status_str,
+                    output=task_output,
+                    error=task_error,
+                    artifact=artifact_file,
+                )
+            finally:
+                if artifact_file:
+                    artifact_file.close()
+
+                # Cleanup artifact file (keep .blend files and saved renders)
+                if result.get("artifact_path") and os.path.exists(
+                    result["artifact_path"]
+                ):
+                    is_image = (
+                        result["artifact_path"]
+                        .lower()
+                        .endswith((".png", ".jpg", ".jpeg"))
+                        and "behind" not in result["artifact_path"].lower()
+                    )
+                    is_blend_file = result["artifact_path"].lower().endswith(".blend")
+
+                    if is_blend_file or (
+                        is_image and config.get("output.save_renders")
+                    ):
+                        return
+
+                    try:
+                        os.remove(result["artifact_path"])
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            try:
+                client.completed(task_id, status="failed", error=str(e))
+            except Exception:
+                pass
+
+            console.print(f"[green]✓[/green] {label} done")
+
+    def check_and_execute_tasks() -> None:
+        """Check for pending tasks and execute them inline (local_blender only).
+
+        Loops until the server has no more pending tasks, so that tasks
+        created while Blender is running are never silently dropped.
+        A re-entrancy guard prevents double-claiming if a WebSocket message
+        arrives while we are already inside this function.
+        """
+        if not local_blender:
+            return
+        nonlocal _executing_tasks
+        if _executing_tasks:
+            return
+        _executing_tasks = True
+        try:
+            while True:
+                tasks = client.list_pending_tasks(generation_id=generation_id)
+                if not tasks:
+                    break
+                for task in tasks:
+                    execute_task_inline(task)
+        except Exception as e:
+            console.print(f"[yellow]⚠[/yellow] Task check error: {e}")
+        finally:
+            _executing_tasks = False
+
+    # Real-time artifact polling: download renders as they're produced on the backend
+    _already_downloaded: set = set()
+
+    def check_and_download_artifacts() -> None:
+        """Poll for new artifacts and download them to output_path."""
+        if _executed_local_tasks:
+            return  # Images already saved locally by inline execution
+        try:
+            artifacts = client.get_generation_artifacts(generation_id)
+            if not artifacts:
+                return
+            for artifact in artifacts:
+                name = artifact.get("name", "")
+                if name in _already_downloaded:
+                    continue
+                data = client.download_file(artifact["url"])
+                if data:
+                    artifact_path = os.path.join(output_path, name)
+                    with open(artifact_path, "wb") as f:
+                        f.write(data)
+                    _already_downloaded.add(name)
+                    console.print(f"[green]✓[/green] Saved render: {name}")
+        except Exception:
+            pass  # Non-blocking, don't interrupt the build
+
+    def on_check_all() -> None:
+        """Combined callback: check tasks then poll artifacts."""
+        check_and_execute_tasks()
+        check_and_download_artifacts()
+
+    try:
+        # Stream logs in real-time via WebSocket
+        with console.status("[cyan]→[/cyan] Building..."):
+
+            def handle_log(log_message: str):
+                """Callback for each log message."""
+                if verbose:
+                    console.print(f"[dim]{log_message}[/dim]")
+                else:
+                    console.print(f"[cyan]→[/cyan] {log_message}")
+
+            task_status = client.stream_generation_logs(
+                generation_id,
+                handle_log,
+                on_check_tasks=on_check_all,
+            )
+
+        if not task_status:
+            console.print("[yellow]⚠[/yellow] Lost connection to log stream")
+            # Fall back to checking final status
+            status_result = client.get_generation_status(generation_id)
+            if status_result:
+                task_status = status_result.get("status")
+
+    except KeyboardInterrupt:
+        console.print(
+            f"\n[yellow]⚠[/yellow] Cancelling build [cyan]{generation_id}[/cyan]..."
+        )
+        cancelled = client.cancel_generation(generation_id)
+        if cancelled:
+            console.print(
+                f"[yellow]⚠[/yellow] Build [cyan]{generation_id}[/cyan] has been cancelled"
+            )
+        else:
+            console.print(f"[red]✗[/red] Failed to cancel build {generation_id}")
+        raise typer.Exit(1)
+
+    # Final artifact poll to catch any last images
+    check_and_download_artifacts()
+
+    # Get final result
+    if task_status == "SUCCESS":
+        console.print("[cyan]→[/cyan] Fetching build result...")
+        final_result = client.get_generation_result(generation_id)
+
+        if not final_result:
+            console.print("[red]✗[/red] Failed to fetch build result")
+            raise typer.Exit(1)
+
+        code = final_result.get("code", "")
+        elapsed_time = final_result.get("elapsed_time", 0)
+
+        if local_blender:
+            console.print(f"[cyan]→[/cyan] Building Blender file...")
+            blender_save_path = export_blender_file_local(code, generation_id)
+            console.print(
+                f"[green]✓[/green] Blender file saved to: {blender_save_path}"
+            )
+
+            console.print(f"[cyan]→[/cyan] Building model file...")
+            model_path = export_glb_local(code, generation_id)
+            console.print(f"[green]✓[/green] Model file saved to: {model_path}")
+        else:
+            console.print(f"[cyan]→[/cyan] Exporting model files...")
+            export_result = client.export_generation(generation_id)
+            if export_result:
+                for key, label, filename in [
+                    ("model_url", "Model", "final_output.glb"),
+                    ("blender_url", "Blender", "final_output.blend"),
+                ]:
+                    url = export_result.get(key)
+                    if url:
+                        data = client.download_file(url)
+                        if data:
+                            save_path = os.path.join(output_path, filename)
+                            with open(save_path, "wb") as f:
+                                f.write(data)
+                            console.print(
+                                f"[green]✓[/green] {label} file saved to: {save_path}"
+                            )
+            else:
+                console.print("[yellow]⚠[/yellow] Failed to export files from server")
+
+        # Show success message
+        console.print()
+        console.print(
+            Panel(
+                f"[bold green]✓ Model build completed![/bold green]\n\n"
+                f"[bold]Prompt:[/bold] {prompt}\n"
+                f"[bold]Mode:[/bold] {mode}\n"
+                f"[bold]Style:[/bold] {style}\n"
+                f"[bold]Build ID:[/bold] {generation_id}\n"
+                f"[bold]Elapsed time:[/bold] {elapsed_time:.1f}s\n\n"
+                f"[dim]View your model at: https://nativeblend.app/build?generationId={generation_id}[/dim]",
+                title="Success",
+                border_style="green",
+            )
+        )
+
+    elif task_status == "FAILURE":
+        console.print(
+            Panel(
+                "[bold red]✗ Model build failed[/bold red]\n\n"
+                f"[bold]Build ID:[/bold] {generation_id}\n"
+                f"[dim]Contact support at support@nativeblend.app[/dim]",
+                title="Failed",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(1)
+
+    elif task_status == "REVOKED":
+        console.print("[yellow]⚠[/yellow] Build timed out or was cancelled")
+        raise typer.Exit(1)
 
 
 @app.command("build")
@@ -565,28 +924,7 @@ def build(
         )
         raise typer.Exit(1)
 
-    # Test blender (only when local_blender is enabled)
-    local_blender = config.is_local_blender()
-    if local_blender:
-        blender_path = config.get_blender_path()
-        if not check_blender_exists(blender_path):
-            prompt_blender_download()
-            raise typer.Exit(1)
-
-        result = run_blender_script_local(
-            'import bpy; print("Blender is working")',
-            blender_path=blender_path,
-            timeout=10,
-        )
-        if "error" in result:
-            console.print(f"[red]✗[/red] Failed to test Blender: {result['error']}")
-            console.print(
-                "[dim]Please ensure Blender is properly installed and the path is correct[/dim]"
-            )
-            raise typer.Exit(1)
-
-    # Now, let's build.
-    # Fall back to config defaults when not provided on the CLI
+    # Resolve config defaults
     if mode is None:
         mode = BuildMode(config.get("generation.default_mode", BuildMode.standard))
     if style is None:
@@ -596,7 +934,7 @@ def build(
     resolved_image_url = image_url
     if image_url and FilePath(image_url).is_file():
         if verbose:
-            console.print(f"[cyan]→[/cyan] Converting local image to base64...")
+            console.print("[cyan]→[/cyan] Converting local image to base64...")
         path = FilePath(image_url)
         mime_type, _ = mimetypes.guess_type(str(path))
         if not mime_type:
@@ -611,8 +949,15 @@ def build(
     console.print(f"[bold blue]Mode:[/bold blue] {mode}")
     console.print(f"[bold blue]Style:[/bold blue] {style}")
 
-    # --- Local agent path (default) ---
-    if not cloud:
+    if cloud:
+        _build_cloud(
+            prompt=prompt,
+            image_url=resolved_image_url,
+            mode=str(mode.value if mode else "standard"),
+            style=str(style.value if style else "auto"),
+            verbose=verbose,
+        )
+    else:
         _build_local(
             prompt=prompt,
             image_url=resolved_image_url,
@@ -621,322 +966,6 @@ def build(
             verbose=verbose,
             mock=mock,
         )
-        return
-
-    # --- Cloud path (legacy, --cloud flag) ---
-    # Initialize API client
-    client = APIClient()
-
-    # Submit build request
-    console.print("[cyan]→[/cyan] Submitting build request...")
-    gen_result: Optional[Dict[str, Any]] = client.submit_generation(
-        prompt=prompt,
-        image_url=resolved_image_url,
-        mode=mode,
-        style=style,
-    )
-
-    if not gen_result or "error" in gen_result:
-        error_msg = gen_result.get("error") if gen_result else "Unknown error"
-        console.print(f"[red]✗[/red] Failed to submit build request: {error_msg}")
-        raise typer.Exit(1)
-
-    generation_id = gen_result["generation_id"]
-    console.print(f"[green]✓[/green] Build started (ID: [cyan]{generation_id}[/cyan])")
-
-    output_path = os.path.join(config.get("output.default_dir"), generation_id)
-    console.print(
-        f"[dim]You can view progress files and renders in:[/dim] [cyan]{output_path}/[/cyan]"
-    )
-    os.makedirs(output_path, exist_ok=True)
-
-    # Inline task execution: check for and run Blender tasks during log streaming
-    blender_path = config.get_blender_path() if local_blender else None
-
-    def _describe_task(artifact_path: str) -> str:
-        """Return a human-friendly label based on the artifact file extension."""
-        if not artifact_path:
-            return "Processing in Blender"
-        lower = artifact_path.lower()
-        if lower.endswith(".glb") or lower.endswith(".gltf"):
-            return "Exporting model"
-        if lower.endswith(".blend"):
-            return "Saving Blender file"
-        if lower.endswith((".png", ".jpg", ".jpeg")) and "behind" not in lower:
-            return "Rendering preview"
-        return "Processing in Blender"
-
-    def execute_task_inline(task: dict) -> None:
-        """Execute a single Blender task inline."""
-
-        task_id = task.get("id")
-        assert task_id, "Task must have an ID"
-
-        # Claim the task
-        task_data = client.claim_task(task_id)
-        if not task_data:
-            console.print(f"[yellow]⚠[/yellow] Failed to claim task")
-            return
-
-        code = task_data.get("code", "")
-        artifact_path = task_data.get("artifact_path", "")
-        generation = task_data.get("generation", "")
-
-        if not generation:
-            console.print(f"[yellow]⚠[/yellow] Skipping task — missing generation ID")
-            return
-
-        label = _describe_task(artifact_path)
-        console.print(f"[cyan]→[/cyan] {label}...")
-
-        try:
-            # Replace artifact_path with a local path
-            if artifact_path:
-                filename = os.path.basename(artifact_path)
-                new_artifact_path = os.path.abspath(
-                    os.path.join(config.get("output.default_dir"), generation, filename)
-                )
-                # Normalize path to use forward slashes (works on Windows and avoids escape sequence issues)
-                new_artifact_path_normalized = new_artifact_path.replace("\\", "/")
-                result = run_blender_script_local(
-                    code.replace(artifact_path, new_artifact_path_normalized),
-                    timeout=120,
-                    blender_path=blender_path,
-                    artifact_path=new_artifact_path,
-                )
-            else:
-                result = run_blender_script_local(
-                    code,
-                    timeout=120,
-                    blender_path=blender_path,
-                )
-
-            task_status_str = "failed" if result.get("error") else "completed"
-            task_output = result.get("output", "")
-            task_error = result.get("error")
-
-            if task_status_str == "completed":
-                nonlocal _executed_local_tasks
-                _executed_local_tasks = True
-
-            console.print(f"[green]✓[/green] {label} done")
-
-            # Upload result with artifact
-            artifact_file = None
-            try:
-                if result.get("artifact_path"):
-                    artifact_file = open(result["artifact_path"], "rb")
-
-                client.completed(
-                    task_id,
-                    status=task_status_str,
-                    output=task_output,
-                    error=task_error,
-                    artifact=artifact_file,
-                )
-            finally:
-                if artifact_file:
-                    artifact_file.close()
-
-                # Cleanup artifact file (keep .blend files and saved renders)
-                if result.get("artifact_path") and os.path.exists(
-                    result["artifact_path"]
-                ):
-                    is_image = (
-                        result["artifact_path"]
-                        .lower()
-                        .endswith((".png", ".jpg", ".jpeg"))
-                        and "behind" not in result["artifact_path"].lower()
-                    )
-                    is_blend_file = result["artifact_path"].lower().endswith(".blend")
-
-                    if is_blend_file or (
-                        is_image and config.get("output.save_renders")
-                    ):
-                        return
-
-                    try:
-                        os.remove(result["artifact_path"])
-                    except Exception:
-                        pass
-
-        except Exception as e:
-            try:
-                client.completed(task_id, status="failed", error=str(e))
-            except Exception:
-                pass
-
-            console.print(f"[green]✓[/green] {label} done")
-
-    _executing_tasks = False
-    _executed_local_tasks = False
-
-    def check_and_execute_tasks() -> None:
-        """Check for pending tasks and execute them inline (local_blender only).
-
-        Loops until the server has no more pending tasks, so that tasks
-        created while Blender is running are never silently dropped.
-        A re-entrancy guard prevents double-claiming if a WebSocket message
-        arrives while we are already inside this function.
-        """
-        if not local_blender:
-            return
-        nonlocal _executing_tasks
-        if _executing_tasks:
-            return
-        _executing_tasks = True
-        try:
-            while True:
-                tasks = client.list_pending_tasks(generation_id=generation_id)
-                if not tasks:
-                    break
-                for task in tasks:
-                    execute_task_inline(task)
-        except Exception as e:
-            console.print(f"[yellow]⚠[/yellow] Task check error: {e}")
-        finally:
-            _executing_tasks = False
-
-    # Real-time artifact polling: download renders as they're produced on the backend
-    _already_downloaded: set = set()
-
-    def check_and_download_artifacts() -> None:
-        """Poll for new artifacts and download them to output_path."""
-        if _executed_local_tasks:
-            return  # Images already saved locally by inline execution
-        try:
-            artifacts = client.get_generation_artifacts(generation_id)
-            if not artifacts:
-                return
-            for artifact in artifacts:
-                name = artifact.get("name", "")
-                if name in _already_downloaded:
-                    continue
-                data = client.download_file(artifact["url"])
-                if data:
-                    artifact_path = os.path.join(output_path, name)
-                    with open(artifact_path, "wb") as f:
-                        f.write(data)
-                    _already_downloaded.add(name)
-                    console.print(f"[green]✓[/green] Saved render: {name}")
-        except Exception:
-            pass  # Non-blocking — don't interrupt the build
-
-    def on_check_all() -> None:
-        """Combined callback: check tasks then poll artifacts."""
-        check_and_execute_tasks()
-        check_and_download_artifacts()
-
-    try:
-        # Stream logs in real-time via WebSocket
-        with console.status("[cyan]→[/cyan] Building..."):
-
-            def handle_log(log_message: str):
-                """Callback for each log message"""
-                if verbose:
-                    console.print(f"[dim]{log_message}[/dim]")
-                else:
-                    console.print(f"[cyan]→[/cyan] {log_message}")
-
-            task_status = client.stream_generation_logs(
-                generation_id,
-                handle_log,
-                on_check_tasks=on_check_all,
-            )
-
-        if not task_status:
-            console.print("[yellow]⚠[/yellow] Lost connection to log stream")
-            # Fall back to checking final status
-            status_result = client.get_generation_status(generation_id)
-            if status_result:
-                task_status = status_result.get("status")
-
-    except KeyboardInterrupt:
-        console.print(
-            f"\n[yellow]⚠[/yellow] Cancelling build [cyan]{generation_id}[/cyan]..."
-        )
-        cancelled = client.cancel_generation(generation_id)
-        if cancelled:
-            console.print(
-                f"[yellow]⚠[/yellow] Build [cyan]{generation_id}[/cyan] has been cancelled"
-            )
-        else:
-            console.print(f"[red]✗[/red] Failed to cancel build {generation_id}")
-        raise typer.Exit(1)
-
-    # Final artifact poll to catch any last images
-    check_and_download_artifacts()
-
-    # Get final result
-    if task_status == "SUCCESS":
-        console.print("[cyan]→[/cyan] Fetching build result...")
-        final_result = client.get_generation_result(generation_id)
-
-        if not final_result:
-            console.print("[red]✗[/red] Failed to fetch build result")
-            raise typer.Exit(1)
-
-        code = final_result.get("code", "")
-        elapsed_time = final_result.get("elapsed_time", 0)
-
-        if local_blender:
-            console.print(f"[cyan]→[/cyan] Building Blender file...")
-            blender_save_path = export_blender_file_local(code, generation_id)
-            console.print(f"[green]✓[/green] Blender file saved to: {blender_save_path}")
-
-            console.print(f"[cyan]→[/cyan] Building model file...")
-            model_path = export_glb_local(code, generation_id)
-            console.print(f"[green]✓[/green] Model file saved to: {model_path}")
-        else:
-            console.print(f"[cyan]→[/cyan] Exporting model files...")
-            export_result = client.export_generation(generation_id)
-            if export_result:
-                for key, label, filename in [
-                    ("model_url", "Model", "final_output.glb"),
-                    ("blender_url", "Blender", "final_output.blend"),
-                ]:
-                    url = export_result.get(key)
-                    if url:
-                        data = client.download_file(url)
-                        if data:
-                            save_path = os.path.join(output_path, filename)
-                            with open(save_path, "wb") as f:
-                                f.write(data)
-                            console.print(f"[green]✓[/green] {label} file saved to: {save_path}")
-            else:
-                console.print("[yellow]⚠[/yellow] Failed to export files from server")
-
-        # Show success message
-        console.print()
-        console.print(
-            Panel(
-                f"[bold green]✓ Model build completed![/bold green]\n\n"
-                f"[bold]Prompt:[/bold] {prompt}\n"
-                f"[bold]Mode:[/bold] {mode}\n"
-                f"[bold]Style:[/bold] {style}\n"
-                f"[bold]Build ID:[/bold] {generation_id}\n"
-                f"[bold]Elapsed time:[/bold] {elapsed_time:.1f}s\n\n"
-                f"[dim]View your model at: https://nativeblend.app/build?generationId={generation_id}[/dim]",
-                title="Success",
-                border_style="green",
-            )
-        )
-
-    elif task_status == "FAILURE":
-        console.print(
-            Panel(
-                "[bold red]✗ Model build failed[/bold red]\n\n"
-                f"[bold]Build ID:[/bold] {generation_id}\n"
-                f"[dim]Contact support at support@nativeblend.app[/dim]",
-                title="Failed",
-                border_style="red",
-            )
-        )
-        raise typer.Exit(1)
-
-    elif task_status == "REVOKED":
-        console.print("[yellow]⚠[/yellow] Build timed out or was cancelled")
-        raise typer.Exit(1)
 
 
 # ---- Generations subcommands ----
@@ -987,9 +1016,7 @@ def gen_list(
     total = result.get("total", 0)
     total_pages = (total + per_page - 1) // per_page
     console.print(table)
-    console.print(
-        f"\n[dim]Page {page} of {total_pages} ({total} total)[/dim]"
-    )
+    console.print(f"\n[dim]Page {page} of {total_pages} ({total} total)[/dim]")
     if page < total_pages:
         console.print(
             f"[dim]Next page: nativeblend generations list --page {page + 1}[/dim]"
@@ -1035,9 +1062,7 @@ def gen_download(
                     f.write(data)
                 console.print("[green]✓[/green] Saved: final_output.blend")
 
-        console.print(
-            f"\n[green]✓[/green] Files saved to: [cyan]{output_path}[/cyan]"
-        )
+        console.print(f"\n[green]✓[/green] Files saved to: [cyan]{output_path}[/cyan]")
         return
 
     # --select mode: interactive checkpoint picker
@@ -1084,7 +1109,9 @@ def gen_download(
             if export_result.get("blender_url"):
                 data = client.download_file(export_result["blender_url"])
                 if data:
-                    with open(os.path.join(output_path, "final_output.blend"), "wb") as f:
+                    with open(
+                        os.path.join(output_path, "final_output.blend"), "wb"
+                    ) as f:
                         f.write(data)
                     console.print("[green]✓[/green] Saved: final_output.blend")
         else:
@@ -1127,6 +1154,4 @@ def gen_download(
                     f.write(data)
                 console.print(f"[green]✓[/green] Saved: {filename}")
 
-    console.print(
-        f"\n[green]✓[/green] Files saved to: [cyan]{output_path}[/cyan]"
-    )
+    console.print(f"\n[green]✓[/green] Files saved to: [cyan]{output_path}[/cyan]")
