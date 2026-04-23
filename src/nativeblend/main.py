@@ -19,7 +19,7 @@ import json as json_lib
 from typing import Optional, Dict, Any
 from . import __version__
 from .config import config
-from .api_client import APIClient
+from .api_client import APIClient, AgentAPIClient
 from .executor import (
     run_blender_script_local,
     export_blender_file_local,
@@ -27,6 +27,8 @@ from .executor import (
     check_blender_exists,
     prompt_blender_download,
 )
+from .agent.runner import run_agent
+from .agent.states import AgentState, Progress
 
 class BuildMode(str, Enum):
     express = "express"
@@ -391,6 +393,127 @@ def config_set(key: str, value: str):
         raise typer.Exit(1)
 
 
+def _build_local(
+    prompt: str,
+    image_url: Optional[str],
+    mode: str,
+    style: str,
+    verbose: bool = False,
+    mock: bool = False,
+) -> None:
+    """Run the local agent loop — Blender runs locally, LLM calls go to the API."""
+    import time as _time
+
+    start_time = _time.time()
+
+    # Ensure Blender works
+    blender_path = config.get_blender_path()
+    if not check_blender_exists(blender_path):
+        prompt_blender_download()
+        raise typer.Exit(1)
+
+    result = run_blender_script_local(
+        'import bpy; print("Blender is working")',
+        blender_path=blender_path,
+        timeout=10,
+    )
+    if result.get("error"):
+        console.print(f"[red]✗[/red] Blender test failed: {result['error']}")
+        raise typer.Exit(1)
+
+    # Set up output directory
+    import uuid
+    generation_id = str(uuid.uuid4())[:8]
+    output_dir = os.path.join(config.get("output.default_dir"), f"local_{generation_id}")
+    os.makedirs(output_dir, exist_ok=True)
+
+    console.print(f"[dim]Output directory: {output_dir}[/dim]")
+
+    # Initialize agent API client
+    agent_api = AgentAPIClient(mock=mock)
+
+    # Initialize agent state
+    state = AgentState(
+        prompt=prompt,
+        mode=mode,
+        style=style,
+        image_url=image_url,
+        output_dir=output_dir,
+    )
+
+    # Callbacks for CLI output
+    def on_log(msg: str) -> None:
+        if verbose:
+            console.print(f"[dim]{msg}[/dim]")
+        else:
+            # Only show important messages in non-verbose mode
+            if any(kw in msg.lower() for kw in ["error", "phase", "rendering", "exporting", "complete", "session"]):
+                console.print(f"[cyan]→[/cyan] {msg}")
+
+    def on_progress(step_name: str, progress: Optional[Progress]) -> None:
+        if progress and progress.stage:
+            stage_label = {
+                "geometry": "Building geometry",
+                "materials": "Applying materials",
+                "polish": "Polishing",
+            }.get(progress.stage, progress.stage)
+            if progress.total_phases > 0:
+                console.print(
+                    f"[cyan]→[/cyan] {stage_label} (phase {progress.phase}/{progress.total_phases}): {step_name}"
+                )
+            else:
+                console.print(f"[cyan]→[/cyan] {stage_label}: {step_name}")
+        else:
+            console.print(f"[cyan]→[/cyan] {step_name}")
+
+    # Run the agent
+    try:
+        with console.status("[cyan]→[/cyan] Running local agent..."):
+            state = run_agent(
+                state,
+                agent_api,
+                on_log=on_log,
+                on_progress=on_progress,
+            )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]⚠[/yellow] Generation cancelled by user")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Generation failed: {e}")
+        if verbose:
+            import traceback
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise typer.Exit(1)
+
+    # Export final model
+    if state.code:
+        try:
+            console.print("[cyan]→[/cyan] Exporting Blender file...")
+            blend_path = export_blender_file_local(state.code, f"local_{generation_id}")
+            console.print(f"[green]✓[/green] Blender file: {blend_path}")
+
+            console.print("[cyan]→[/cyan] Exporting GLB model...")
+            glb_path = export_glb_local(state.code, f"local_{generation_id}")
+            console.print(f"[green]✓[/green] Model file: {glb_path}")
+        except Exception as e:
+            console.print(f"[yellow]⚠[/yellow] Export failed: {e}")
+
+    elapsed = _time.time() - start_time
+    console.print()
+    console.print(
+        Panel(
+            f"[bold green]✓ Model build completed![/bold green]\n\n"
+            f"[bold]Prompt:[/bold] {prompt}\n"
+            f"[bold]Mode:[/bold] {mode}\n"
+            f"[bold]Style:[/bold] {style}\n"
+            f"[bold]Elapsed time:[/bold] {elapsed:.1f}s\n"
+            f"[bold]Output:[/bold] {output_dir}",
+            title="Success",
+            border_style="green",
+        )
+    )
+
+
 @app.command("build")
 def build(
     prompt: str = typer.Argument(
@@ -416,6 +539,12 @@ def build(
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
+    ),
+    cloud: bool = typer.Option(
+        False, "--cloud", help="Use cloud-based generation (legacy mode)"
+    ),
+    mock: bool = typer.Option(
+        False, "--mock", hidden=True, help="Use server-side mock endpoints for testing"
     ),
 ):
     """
@@ -482,6 +611,19 @@ def build(
     console.print(f"[bold blue]Mode:[/bold blue] {mode}")
     console.print(f"[bold blue]Style:[/bold blue] {style}")
 
+    # --- Local agent path (default) ---
+    if not cloud:
+        _build_local(
+            prompt=prompt,
+            image_url=resolved_image_url,
+            mode=str(mode.value if mode else "standard"),
+            style=str(style.value if style else "auto"),
+            verbose=verbose,
+            mock=mock,
+        )
+        return
+
+    # --- Cloud path (legacy, --cloud flag) ---
     # Initialize API client
     client = APIClient()
 

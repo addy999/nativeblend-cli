@@ -6,6 +6,150 @@ import time
 from typing import Optional, Dict, Any, Callable
 from urllib.parse import urljoin
 from .config import config
+from .agent.states import AgentState, SessionInfo, StepResponse, Progress
+
+
+class AgentAPIClient:
+    """Client for the v2 generation API.
+
+    Sends local context (code, images) and receives actions to execute
+    locally (render, apply_code, export, etc.).
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        mock: bool = False,
+    ):
+        self.api_key = api_key or config.get_api_key()
+        self.base_url = base_url or config.get_api_endpoint()
+        self.timeout = config.get_timeout()
+        self._v2 = "v2/mock" if mock else "v2"
+
+    def _get_headers(self) -> Dict[str, str]:
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _url(self, path: str) -> str:
+        base = self.base_url if self.base_url.endswith("/") else self.base_url + "/"
+        return urljoin(base, path.lstrip("/"))
+
+    def start_session(
+        self,
+        prompt: str,
+        mode: str = "standard",
+        style: str = "auto",
+        image_url: Optional[str] = None,
+    ) -> SessionInfo:
+        """Initialize a generation session."""
+        payload: Dict[str, Any] = {"prompt": prompt, "mode": mode, "style": style}
+        if image_url:
+            payload["image_url"] = image_url
+
+        response = requests.post(
+            self._url(f"{self._v2}/session/start"),
+            headers={**self._get_headers(), "Content-Type": "application/json"},
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return SessionInfo(
+            session_token=data["session_token"],
+            enhanced_prompt=data.get("enhanced_prompt", prompt),
+            phases=[p.get("goal", "") for p in data.get("phases", [])],
+        )
+
+    def step(
+        self,
+        session_token: str,
+        state: AgentState,
+    ) -> StepResponse:
+        """Get the next action from the API.
+
+        Args:
+            session_token: Session token from start_session().
+            state: Current agent state (code, images, errors).
+
+        Returns:
+            Parsed StepResponse with action, step_name, code, progress, etc.
+        """
+        # Build context from state
+        context = {}
+        if state.code:
+            context["code"] = state.code
+        if state.last_output:
+            context["output"] = state.last_output
+        if state.last_error:
+            context["error"] = state.last_error
+
+        image_paths = state.images if state.images else []
+
+        headers = self._get_headers()
+        files = []
+        if image_paths:
+            for path in image_paths:
+                files.append(
+                    ("images", (path.split("/")[-1], open(path, "rb"), "image/png"))
+                )
+
+        try:
+            response = requests.post(
+                self._url(f"{self._v2}/llm/step"),
+                headers=headers,
+                data={
+                    "session_token": session_token,
+                    "context": json.dumps(context),
+                },
+                files=files if files else None,
+                timeout=300,
+            )
+            response.raise_for_status()
+            return self._parse_step_response(response.json())
+        finally:
+            for _, file_tuple in files:
+                file_tuple[1].close()
+
+    def end_session(
+        self,
+        session_token: str,
+    ) -> Dict[str, Any]:
+        """Finalize and close a generation session.
+
+        Returns:
+            {"generation_id": str}
+        """
+        payload: Dict[str, Any] = {"session_token": session_token}
+
+        response = requests.post(
+            self._url(f"{self._v2}/session/end"),
+            headers={**self._get_headers(), "Content-Type": "application/json"},
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def _parse_step_response(self, data: dict) -> StepResponse:
+        """Parse a raw step response dict into a StepResponse dataclass."""
+        progress = None
+        if data.get("progress"):
+            p = data["progress"]
+            progress = Progress(
+                phase=p.get("phase", 0),
+                total_phases=p.get("total_phases", 0),
+                stage=p.get("stage", ""),
+            )
+        return StepResponse(
+            action=data.get("action", "done"),
+            step_name=data.get("step_name", ""),
+            code=data.get("code"),
+            progress=progress,
+            render_scripts=data.get("render_scripts"),
+        )
 
 
 class APIClient:
@@ -291,9 +435,7 @@ class APIClient:
         except requests.RequestException:
             return None
 
-    def get_generation_artifacts(
-        self, generation_id: str
-    ) -> Optional[list]:
+    def get_generation_artifacts(self, generation_id: str) -> Optional[list]:
         """Get all artifacts (images, etc.) for a generation."""
         try:
             response = requests.get(
@@ -307,9 +449,7 @@ class APIClient:
         except requests.RequestException:
             return None
 
-    def get_generation_checkpoints(
-        self, generation_id: str
-    ) -> Optional[list]:
+    def get_generation_checkpoints(self, generation_id: str) -> Optional[list]:
         """Get checkpoint metadata for a generation (no code)."""
         try:
             response = requests.get(
@@ -341,9 +481,7 @@ class APIClient:
         except requests.RequestException:
             return None
 
-    def export_generation(
-        self, generation_id: str
-    ) -> Optional[Dict[str, Any]]:
+    def export_generation(self, generation_id: str) -> Optional[Dict[str, Any]]:
         """Trigger backend export and get download URLs for .glb and .blend files."""
         try:
             response = requests.post(
