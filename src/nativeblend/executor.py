@@ -2,8 +2,42 @@ import os
 import re
 import subprocess
 import tempfile
+from typing import Optional
+
 import typer
 from .config import config
+
+# Patterns that should never appear in a Blender generation script.
+# This is a tripwire, not a sandbox: it catches accidents, not attacks.
+_BLOCKED_PATTERNS = [
+    (r'\bos\.system\b', "os.system call"),
+    (r'\bsubprocess\b', "subprocess usage"),
+    (r'\bshutil\.rmtree\b', "recursive delete"),
+    (r'\bshutil\.move\b', "file move"),
+    (r'\b__import__\b', "dynamic import"),
+    (r'\beval\s*\(', "eval call"),
+    (r'\bexec\s*\(', "exec call"),
+    (r'\bcompile\s*\(', "compile call"),
+    (r'\bimport\s+socket\b', "socket import"),
+    (r'\bimport\s+http\b', "http import"),
+    (r'\bimport\s+urllib\b', "urllib import"),
+    (r'\bimport\s+requests\b', "requests import"),
+    (r'\bimport\s+ctypes\b', "ctypes import"),
+    (r'\bimport\s+multiprocessing\b', "multiprocessing import"),
+    (r'\bopen\s*\(.*(\/etc|\/usr|\/var|~)', "file access outside working directory"),
+    (r'rm\s+-rf', "rm -rf command"),
+]
+
+
+def _check_script_safety(script: str) -> Optional[str]:
+    """Check a Blender script for dangerous patterns.
+
+    Returns None if safe, or a description of the violation if blocked.
+    """
+    for pattern, description in _BLOCKED_PATTERNS:
+        if re.search(pattern, script):
+            return f"Blocked: script contains {description}"
+    return None
 
 
 def check_blender_exists(blender_path: str) -> bool:
@@ -53,6 +87,10 @@ def run_blender_script_local(
     timeout: int = 60,
 ) -> dict:
     """Execute a Blender script in the current process using a temporary file."""
+
+    safety_violation = _check_script_safety(script_code)
+    if safety_violation:
+        return {"error": safety_violation}
 
     blender_path = config.get_blender_path()
     if not check_blender_exists(blender_path):
