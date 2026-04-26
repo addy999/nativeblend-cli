@@ -3,6 +3,7 @@ import websocket
 import certifi
 import json
 import time
+import tenacity
 from typing import Optional, Dict, Any, Callable
 from urllib.parse import urljoin
 from .config import config
@@ -63,6 +64,11 @@ class AgentAPIClient:
             phases=[p.get("goal", "") for p in data.get("phases", [])],
         )
 
+    @tenacity.retry(
+        wait=tenacity.wait_none(),
+        stop=tenacity.stop_after_attempt(3),
+        retry=tenacity.retry_if_exception_type(requests.RequestException),
+    )
     def step(
         self,
         session_token: str,

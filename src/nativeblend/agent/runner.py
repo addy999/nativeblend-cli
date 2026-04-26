@@ -58,8 +58,10 @@ def run_agent(
 
     # --- Step 2: Log planned phases ---
     log(f"Planned {len(state.session.phases)} phase(s)")
-    for i, goal in enumerate(state.session.phases):
-        log(f"  Phase {i + 1}: {goal}")
+    for i, phase in enumerate(state.session.phases):
+        log(f"  Phase {i + 1}: {phase.goal} ({phase.parts_count} part(s))")
+        for step in phase.steps:
+            log(f"    - {step}")
 
     # --- Step 3: Step loop ---
     revision = 0
@@ -74,6 +76,7 @@ def run_agent(
                 log(f"Updating code: {resp.step_name}")
                 state.code = resp.code
                 state.images = []
+                state.last_error = None
                 revision += 1
 
             case "execute":
@@ -84,7 +87,9 @@ def run_agent(
                     break
                 blender_path = config.get_blender_path()
                 result = run_blender_script_local(
-                    resp.code, blender_path=blender_path, timeout=120,
+                    resp.code,
+                    blender_path=blender_path,
+                    timeout=120,
                 )
                 state.last_output = result.get("output", "")
                 if result.get("error"):
@@ -112,8 +117,10 @@ def run_agent(
                 if error:
                     log(f"Render error: {error}")
                     state.images = []
+                    state.last_error = error
                 else:
                     state.images = image_paths
+                    state.last_error = None
                     log(f"Rendered {len(image_paths)} view(s)")
 
             case "done":
