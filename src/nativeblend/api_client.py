@@ -38,6 +38,11 @@ class AgentAPIClient:
         base = self.base_url if self.base_url.endswith("/") else self.base_url + "/"
         return urljoin(base, path.lstrip("/"))
 
+    @tenacity.retry(
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
+        stop=tenacity.stop_after_attempt(3),
+        retry=tenacity.retry_if_exception_type(requests.RequestException),
+    )
     def start_session(
         self,
         prompt: str,
@@ -63,11 +68,11 @@ class AgentAPIClient:
             message=data.get("message", ""),
         )
 
-    # @tenacity.retry(
-    #     wait=tenacity.wait_none(),
-    #     stop=tenacity.stop_after_attempt(3),
-    #     retry=tenacity.retry_if_exception_type(requests.RequestException),
-    # )
+    @tenacity.retry(
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
+        stop=tenacity.stop_after_attempt(3),
+        retry=tenacity.retry_if_exception_type(requests.RequestException),
+    )
     def step(
         self,
         generation_id: str,
@@ -137,6 +142,31 @@ class AgentAPIClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def cancel_session(self, generation_id: str) -> bool:
+        """Cancel a running session. Returns True on success."""
+        try:
+            response = requests.delete(
+                self._url(f"{self._v2}/session/{generation_id}"),
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+            return response.status_code == 200
+        except requests.RequestException:
+            return False
+
+    def fail_session(self, generation_id: str, error_message: str) -> bool:
+        """Report a session failure to the server. Returns True on success."""
+        try:
+            response = requests.post(
+                self._url(f"{self._v2}/session/fail"),
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                json={"generation_id": generation_id, "error_message": error_message},
+                timeout=self.timeout,
+            )
+            return response.status_code == 200
+        except requests.RequestException:
+            return False
 
     def _parse_step_response(self, data: dict) -> StepResponse:
         """Parse a raw step response dict into a StepResponse dataclass."""

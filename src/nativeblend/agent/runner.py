@@ -66,11 +66,41 @@ def run_agent(
     revision = 0
 
     while not state.done:
-        resp: StepResponse = api.step(state.session.generation_id, state)
+        try:
+            resp: StepResponse = api.step(state.session.generation_id, state)
+        except KeyboardInterrupt:
+            log("Cancellation requested by user")
+            try:
+                api.cancel_session(state.session.generation_id)
+            except Exception:
+                pass
+            state.error = "Cancelled by user"
+            state.done = True
+            break
+        except Exception as e:
+            log(f"ERROR: Step request failed: {e}")
+            try:
+                api.fail_session(
+                    state.session.generation_id,
+                    f"Client step request failed: {e}",
+                )
+            except Exception:
+                pass
+            state.error = str(e)
+            state.done = True
+            break
+
         show(resp.message)
         log(f"Action: {resp.action}")
 
         match resp.action:
+            case "error":
+                error_msg = resp.data.get("error_message", "Unknown server error")
+                log(f"ERROR: Server reported error: {error_msg}")
+                state.error = error_msg
+                state.done = True
+                break
+
             case "update_code":
                 state.code = resp.code
                 state.images = []
@@ -121,7 +151,9 @@ def run_agent(
                     generation_id = os.path.basename(state.output_dir)
                     blend_filename = f"{prefix}-{revision}.blend"
                     try:
-                        export_blender_file_local(state.code, generation_id, filename=blend_filename)
+                        export_blender_file_local(
+                            state.code, generation_id, filename=blend_filename
+                        )
                         log(f"Saved .blend snapshot: {blend_filename}")
                     except Exception as e:
                         log(f"Warning: could not save .blend snapshot: {e}")
@@ -133,11 +165,14 @@ def run_agent(
                 log(f"Unrecognised action '{resp.action}' — skipping")
 
     # --- End session ---
-    log("Ending session...")
-    try:
-        api.end_session(state.session.generation_id)
-        log("Session ended.")
-    except Exception as e:
-        log(f"Warning: Failed to end session cleanly: {e}")
+    if state.error:
+        log(f"Session ended with error: {state.error}")
+    else:
+        log("Ending session...")
+        try:
+            api.end_session(state.session.generation_id)
+            log("Session ended successfully.")
+        except Exception as e:
+            log(f"Warning: Failed to end session cleanly: {e}")
 
     return state

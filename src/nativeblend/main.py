@@ -453,21 +453,7 @@ def _build_local(
     # Callbacks for CLI output
     def on_log(msg: str) -> None:
         if verbose:
-            console.print(f"[dim]{msg}[/dim]")
-        else:
-            # Only show important messages in non-verbose mode
-            if any(
-                kw in msg.lower()
-                for kw in [
-                    "error",
-                    "phase",
-                    "rendering",
-                    "exporting",
-                    "complete",
-                    "session",
-                ]
-            ):
-                console.print(f"[cyan]→[/cyan] {msg}")
+            console.print(f"[cyan]→[/cyan] {msg}")
 
     def on_message(msg: str) -> None:
         console.print(f"[cyan]→[/cyan] {msg}")
@@ -492,6 +478,21 @@ def _build_local(
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         raise typer.Exit(1)
 
+    if state.error:
+        elapsed = _time.time() - start_time
+        console.print()
+        console.print(
+            Panel(
+                f"[bold red]Generation failed[/bold red]\n\n"
+                f"[bold]Prompt:[/bold] {prompt}\n"
+                f"[bold]Error:[/bold] {state.error}\n"
+                f"[bold]Elapsed time:[/bold] {elapsed:.1f}s",
+                title="Failed",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(1)
+
     # Export final model
     if state.code:
         try:
@@ -509,7 +510,7 @@ def _build_local(
     console.print()
     console.print(
         Panel(
-            f"[bold green]✓ Model build completed![/bold green]\n\n"
+            f"[bold green]Model build completed![/bold green]\n\n"
             f"[bold]Prompt:[/bold] {prompt}\n"
             f"[bold]Mode:[/bold] {mode}\n"
             f"[bold]Style:[/bold] {style}\n"
@@ -1040,7 +1041,9 @@ def gen_download(
 
     os.makedirs(output_path, exist_ok=True)
 
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
+    with Progress(
+        SpinnerColumn(), TextColumn("{task.description}"), console=console
+    ) as progress:
         task = progress.add_task("Exporting GLB...", total=None)
         try:
             glb_path = export_glb_local(code, generation_id)

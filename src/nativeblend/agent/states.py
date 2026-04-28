@@ -16,6 +16,8 @@ class StepResponse:
     # Ex: {"script": str, "view": str}.
     render_scripts: Optional[list[dict]] = None
 
+    data: dict = field(default_factory=dict)
+
 
 @dataclass
 class SessionInfo:
@@ -48,6 +50,7 @@ class AgentState:
 
     # Loop control
     done: bool = False
+    error: Optional[str] = None
 
     # Output directory for renders / exports
     output_dir: str = ""
