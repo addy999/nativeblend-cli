@@ -1,8 +1,8 @@
-"""Render pipeline: executes Blender render scripts and returns image paths.
+"""Render pipeline: executes Blender scene-setup scripts and returns image paths.
 
-Each render script is a self-contained Blender Python script (camera, lighting,
-wireframe config, render settings). This module executes them locally in
-headless Blender and collects the output images.
+The API sends scene-setup scripts (camera, lighting, render engine config)
+without a filepath or render command. This module appends the output path and
+render call, then executes them locally in headless Blender.
 """
 
 from __future__ import annotations
@@ -15,24 +15,34 @@ from ..executor import run_blender_script_local
 from ..config import config
 
 
+def _finalize_script(scene_script: str, output_path: str) -> str:
+    """Append the render filepath and render command to a scene-setup script."""
+    return (
+        scene_script
+        + f"\nbpy.context.scene.render.filepath = os.path.abspath({repr(output_path)})"
+        + "\nbpy.ops.render.render(write_still=True)\n"
+    )
+
+
 def render_blender_script(
-    script: str,
+    scene_script: str,
     output_path: str,
 ) -> dict:
-    """Run a complete render script in Blender and return the output image path.
+    """Finalize a scene-setup script with the output path, then execute it.
 
     Args:
-        script: Complete Blender Python script (includes camera, lighting,
-                and render settings).
+        scene_script: Blender Python script with camera, lighting, and render
+            settings but no filepath or render command.
         output_path: Where to save the rendered image.
 
     Returns:
         {"path": str} on success, {"error": str} on failure.
     """
     output_path = os.path.abspath(output_path)
+    final_script = _finalize_script(scene_script, output_path)
     blender_path = config.get_blender_path()
     result = run_blender_script_local(
-        script, blender_path=blender_path, artifact_path=output_path, timeout=120,
+        final_script, blender_path=blender_path, artifact_path=output_path, timeout=120,
     )
 
     if result.get("error"):
@@ -45,20 +55,20 @@ def render_blender_script(
 
 
 def render_views(
-    scripts: list[str],
+    scripts: list[dict],
     output_dir: str,
     *,
     prefix: str = "render",
     revision: int = 1,
 ) -> tuple[list[str], Optional[str]]:
-    """Run a list of complete render scripts in parallel.
+    """Run a list of scene-setup scripts in parallel.
 
-    Each script in the list is a fully self-contained Blender Python script
-    (camera setup, lighting, render settings). The function assigns output
-    paths sequentially and runs them in parallel.
+    Each entry is a dict with "script" (scene-setup code) and "view" (label
+    like "front", "back"). This function appends the output filepath and
+    render command, then executes in parallel.
 
     Args:
-        scripts: List of complete Blender render scripts (one per view).
+        scripts: List of {"script": str, "view": str} dicts from the API.
         output_dir: Directory for rendered images.
         prefix: Filename prefix (e.g. "geometry", "material").
         revision: Current revision number for filename.
@@ -71,15 +81,15 @@ def render_views(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Build (script, output_path) pairs
     pairs = []
-    for i, script in enumerate(scripts):
-        filename = f"{prefix}-{revision}-{i}.png" if len(scripts) > 1 else f"{prefix}-{revision}.png"
-        pairs.append((script, os.path.join(output_dir, filename)))
+    for entry in scripts:
+        view = entry["view"]
+        filename = f"{prefix}-{revision}-{view}.png"
+        pairs.append((entry["script"], os.path.join(output_dir, filename)))
 
     def _render(pair: tuple[str, str]) -> dict:
-        script, path = pair
-        return render_blender_script(script, path)
+        scene_script, path = pair
+        return render_blender_script(scene_script, path)
 
     with ThreadPoolExecutor(max_workers=len(pairs)) as executor:
         futures = {executor.submit(_render, pair): pair for pair in pairs}

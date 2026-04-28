@@ -13,6 +13,7 @@ import mimetypes
 import requests
 from pathlib import Path as FilePath
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.panel import Panel
 import json as json_lib
@@ -28,7 +29,7 @@ from .executor import (
     prompt_blender_download,
 )
 from .agent.runner import run_agent
-from .agent.states import AgentState, Progress
+from .agent.states import AgentState
 
 
 class BuildMode(str, Enum):
@@ -69,9 +70,9 @@ app.add_typer(auth_app, name="auth")
 config_app = typer.Typer(help="Manage configuration settings")
 app.add_typer(config_app, name="config")
 
-# Generations subcommand group
-gen_app = typer.Typer(help="Browse and manage generations")
-app.add_typer(gen_app, name="generations")
+# Builds subcommand group
+gen_app = typer.Typer(help="Browse and manage builds")
+app.add_typer(gen_app, name="builds")
 
 
 def _version_tuple(v: str) -> tuple:
@@ -468,13 +469,8 @@ def _build_local(
             ):
                 console.print(f"[cyan]→[/cyan] {msg}")
 
-    def on_progress(step_name: str, progress: Optional[Progress]) -> None:
-        if progress and progress.total_phases > 0:
-            console.print(
-                f"[cyan]→[/cyan] Phase {progress.phase}/{progress.total_phases}: {step_name}"
-            )
-        else:
-            console.print(f"[cyan]→[/cyan] {step_name}")
+    def on_message(msg: str) -> None:
+        console.print(f"[cyan]→[/cyan] {msg}")
 
     # Run the agent
     try:
@@ -483,7 +479,7 @@ def _build_local(
                 state,
                 agent_api,
                 on_log=on_log,
-                on_progress=on_progress,
+                on_message=on_message,
             )
     except KeyboardInterrupt:
         console.print("\n[yellow]⚠[/yellow] Generation cancelled by user")
@@ -968,7 +964,7 @@ def build(
         )
 
 
-# ---- Generations subcommands ----
+# ---- Builds subcommands ----
 
 
 @gen_app.command("list")
@@ -976,12 +972,12 @@ def gen_list(
     page: int = typer.Option(1, "--page", "-p", help="Page number"),
     per_page: int = typer.Option(20, "--per-page", "-n", help="Items per page"),
 ):
-    """List your generations."""
+    """List your builds."""
     client = APIClient()
     result = client.list_generations(page=page, per_page=per_page)
 
     if not result or not result.get("generations"):
-        console.print("[yellow]No generations found[/yellow]")
+        console.print("[yellow]No builds found[/yellow]")
         raise typer.Exit()
 
     table = Table(show_header=True, header_style="bold cyan")
@@ -1019,139 +1015,47 @@ def gen_list(
     console.print(f"\n[dim]Page {page} of {total_pages} ({total} total)[/dim]")
     if page < total_pages:
         console.print(
-            f"[dim]Next page: nativeblend generations list --page {page + 1}[/dim]"
+            f"[dim]Next page: nativeblend builds list --page {page + 1}[/dim]"
         )
 
 
 @gen_app.command("download")
 def gen_download(
-    generation_id: str = typer.Argument(help="Generation ID to download"),
-    select: bool = typer.Option(
-        False, "--select", "-s", help="Interactively select individual checkpoints"
-    ),
+    generation_id: str = typer.Argument(help="Build ID to download"),
 ):
-    """Download model files for a generation.
+    """Download model files for a build.
 
-    By default downloads the final .glb and .blend files. Use --select to
-    interactively pick individual build checkpoints instead.
+    Fetches the latest working code from the server and exports the .glb
+    and .blend files locally using Blender.
     """
     client = APIClient()
     output_path = os.path.join(config.get("output.default_dir"), generation_id)
+
+    console.print("[cyan]→[/cyan] Fetching build code...")
+    code = client.get_generation_code(generation_id)
+
+    if not code:
+        console.print("[yellow]⚠[/yellow] No code found for this build")
+        raise typer.Exit(1)
+
     os.makedirs(output_path, exist_ok=True)
 
-    if not select:
-        # Default: download the final exported model
-        console.print("[cyan]→[/cyan] Exporting final generation output...")
-        export_result = client.export_generation(generation_id)
-
-        if not export_result:
-            console.print("[yellow]⚠[/yellow] Failed to export generation")
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
+        task = progress.add_task("Exporting GLB...", total=None)
+        try:
+            glb_path = export_glb_local(code, generation_id)
+            progress.update(task, description="Exporting .blend...")
+        except Exception as e:
+            console.print(f"[red]✗[/red] GLB export failed: {e}")
             raise typer.Exit(1)
 
-        if export_result.get("model_url"):
-            data = client.download_file(export_result["model_url"])
-            if data:
-                with open(os.path.join(output_path, "final_output.glb"), "wb") as f:
-                    f.write(data)
-                console.print("[green]✓[/green] Saved: final_output.glb")
+        try:
+            blend_path = export_blender_file_local(code, generation_id)
+            progress.update(task, description="Done")
+        except Exception as e:
+            console.print(f"[red]✗[/red] .blend export failed: {e}")
+            raise typer.Exit(1)
 
-        if export_result.get("blender_url"):
-            data = client.download_file(export_result["blender_url"])
-            if data:
-                with open(os.path.join(output_path, "final_output.blend"), "wb") as f:
-                    f.write(data)
-                console.print("[green]✓[/green] Saved: final_output.blend")
-
-        console.print(f"\n[green]✓[/green] Files saved to: [cyan]{output_path}[/cyan]")
-        return
-
-    # --select mode: interactive checkpoint picker
-    import questionary
-
-    console.print("[cyan]→[/cyan] Fetching generation data...")
-    checkpoints = client.get_generation_checkpoints(generation_id)
-
-    if not checkpoints:
-        console.print("[yellow]No checkpoints found for this generation[/yellow]")
-        raise typer.Exit()
-
-    # Build choices for multi-select
-    choices = []
-    for i, cp in enumerate(checkpoints):
-        step = cp.get("step", "unknown")
-        created = cp.get("created", "")[:19]
-        label = f"[{i + 1}] {step} — {created}"
-        choices.append(questionary.Choice(title=label, value=i))
-
-    choices.insert(0, questionary.Choice(title="Latest (final output)", value="latest"))
-    choices.insert(0, questionary.Choice(title="All checkpoints", value="all"))
-
-    selected = questionary.checkbox(
-        "Select checkpoints to download:",
-        choices=choices,
-    ).ask()
-
-    if not selected:
-        console.print("[yellow]No checkpoints selected[/yellow]")
-        raise typer.Exit()
-
-    # Handle "latest" — export final generation output
-    if "latest" in selected:
-        console.print("[cyan]→[/cyan] Exporting final generation output...")
-        export_result = client.export_generation(generation_id)
-        if export_result:
-            if export_result.get("model_url"):
-                data = client.download_file(export_result["model_url"])
-                if data:
-                    with open(os.path.join(output_path, "final_output.glb"), "wb") as f:
-                        f.write(data)
-                    console.print("[green]✓[/green] Saved: final_output.glb")
-            if export_result.get("blender_url"):
-                data = client.download_file(export_result["blender_url"])
-                if data:
-                    with open(
-                        os.path.join(output_path, "final_output.blend"), "wb"
-                    ) as f:
-                        f.write(data)
-                    console.print("[green]✓[/green] Saved: final_output.blend")
-        else:
-            console.print("[yellow]⚠[/yellow] Failed to export final output")
-
-    # Resolve checkpoint indices
-    if "all" in selected:
-        indices = list(range(len(checkpoints)))
-    else:
-        indices = [s for s in selected if isinstance(s, int)]
-
-    # Export and download each selected checkpoint via the backend
-    for idx in indices:
-        cp = checkpoints[idx]
-        step = cp.get("step", "unknown")
-        cp_id = cp["id"]
-
-        console.print(f"[cyan]→[/cyan] Exporting checkpoint {idx + 1} ({step})...")
-        export_result = client.export_checkpoint(generation_id, cp_id)
-
-        if not export_result:
-            console.print(f"[yellow]⚠[/yellow] Failed to export checkpoint {idx + 1}")
-            continue
-
-        # Download .glb
-        if export_result.get("model_url"):
-            data = client.download_file(export_result["model_url"])
-            if data:
-                filename = f"checkpoint-{step}-{idx + 1}.glb"
-                with open(os.path.join(output_path, filename), "wb") as f:
-                    f.write(data)
-                console.print(f"[green]✓[/green] Saved: {filename}")
-
-        # Download .blend
-        if export_result.get("blender_url"):
-            data = client.download_file(export_result["blender_url"])
-            if data:
-                filename = f"checkpoint-{step}-{idx + 1}.blend"
-                with open(os.path.join(output_path, filename), "wb") as f:
-                    f.write(data)
-                console.print(f"[green]✓[/green] Saved: {filename}")
-
+    console.print(f"[green]✓[/green] Saved: {os.path.basename(glb_path)}")
+    console.print(f"[green]✓[/green] Saved: {os.path.basename(blend_path)}")
     console.print(f"\n[green]✓[/green] Files saved to: [cyan]{output_path}[/cyan]")

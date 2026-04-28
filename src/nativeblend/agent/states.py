@@ -1,16 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
-
-
-@dataclass
-class Progress:
-    """Progress info returned with each step response."""
-
-    phase: int = 0
-    total_phases: int = 0
-    stage: str = ""
+from typing import Any, Optional
 
 
 @dataclass
@@ -18,19 +9,20 @@ class StepResponse:
     """A single step response received from the API."""
 
     action: str
-    step_name: str = ""
+    message: str = ""
     code: Optional[str] = None
-    progress: Optional[Progress] = None
-    render_scripts: Optional[list[str]] = None
+
+    # list of scene-setup scripts for render actions.
+    # Ex: {"script": str, "view": str}.
+    render_scripts: Optional[list[dict]] = None
 
 
 @dataclass
 class SessionInfo:
-    """Session info returned when starting a generation session."""
+    """session data returned by /v2/session/start."""
 
-    session_token: str
-    enhanced_prompt: str
-    phases: list[str] = field(default_factory=list)
+    generation_id: str
+    message: str = ""
 
 
 @dataclass
@@ -46,16 +38,16 @@ class AgentState:
     # Session
     session: Optional[SessionInfo] = None
 
-    # Current state
+    # Current execution state
     code: Optional[str] = None
     images: list[str] = field(default_factory=list)  # paths to rendered PNGs
 
-    # Execute action output
+    # Last execute result
     last_output: str = ""
     last_error: Optional[str] = None
 
-    # Progress
+    # Loop control
     done: bool = False
 
-    # Output
+    # Output directory for renders / exports
     output_dir: str = ""

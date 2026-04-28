@@ -1,21 +1,26 @@
-"""Main agent loop: orchestrates local generation by following API instructions.
+"""Main agent loop: executes server-driven actions locally.
 
-This runner:
-1. Starts a session
-2. Requests the next action from the API and executes it locally
-3. Repeats until the generation is complete, then ends the session
+The server is fully in control of the workflow.  Each call to /v2/llm/step
+returns the next action to execute plus a human-readable message to display.
+The client never makes assumptions about sequencing or phases.
 
-Local actions: update_code, execute, render, done.
+Supported actions (open set - new ones from the server are logged and skipped
+gracefully):
+    update_code  - store new code, clear prior render state
+    execute      - run the provided script in headless Blender
+    render       - render views using provided render scripts
+    done         - generation complete, end the session
 """
 
 from __future__ import annotations
 
+import os
 from typing import Optional, Callable
 
 from ..api_client import AgentAPIClient
-from ..executor import run_blender_script_local
+from ..executor import run_blender_script_local, export_blender_file_local
 from ..config import config
-from .states import AgentState, StepResponse, Progress
+from .states import AgentState, StepResponse
 from .renderer import render_views
 
 
@@ -24,15 +29,16 @@ def run_agent(
     api: AgentAPIClient,
     *,
     on_log: Optional[Callable[[str], None]] = None,
-    on_progress: Optional[Callable[[str, Optional[Progress]], None]] = None,
+    on_message: Optional[Callable[[str], None]] = None,
 ) -> AgentState:
     """Run the local agent loop.
 
     Args:
         state: Initial agent state with prompt, mode, style, output_dir.
         api: AgentAPIClient instance (real or mock).
-        on_log: Callback for log messages (step names, feedback, errors).
-        on_progress: Callback for progress updates (step_name, progress).
+        on_log: Callback for internal log/debug messages.
+        on_message: Callback for server-supplied display messages surfaced to
+                    the user.  The server controls what (if anything) is shown.
 
     Returns:
         Updated AgentState with final code and done=True.
@@ -42,11 +48,11 @@ def run_agent(
         if on_log:
             on_log(msg)
 
-    def progress(step_name: str, prog: Optional[Progress] = None) -> None:
-        if on_progress:
-            on_progress(step_name, prog)
+    def show(msg: str) -> None:
+        if msg and on_message:
+            on_message(msg)
 
-    # --- Step 1: Start session ---
+    # --- Start session ---
     log("Starting generation session...")
     state.session = api.start_session(
         prompt=state.prompt,
@@ -54,33 +60,24 @@ def run_agent(
         style=state.style,
         image_url=state.image_url,
     )
-    log(f"Session started. Enhanced prompt: {state.session.enhanced_prompt}")
+    show(state.session.message)
 
-    # --- Step 2: Log planned phases ---
-    log(f"Planned {len(state.session.phases)} phase(s)")
-    for i, phase in enumerate(state.session.phases):
-        log(f"  Phase {i + 1}: {phase.goal} ({phase.parts_count} part(s))")
-        for step in phase.steps:
-            log(f"    - {step}")
-
-    # --- Step 3: Step loop ---
+    # --- Step loop ---
     revision = 0
 
     while not state.done:
-        resp = api.step(state.session.session_token, state)
-        progress(resp.step_name, resp.progress)
+        resp: StepResponse = api.step(state.session.generation_id, state)
+        show(resp.message)
+        log(f"Action: {resp.action}")
 
-        # --- Execute local action ---
         match resp.action:
             case "update_code":
-                log(f"Updating code: {resp.step_name}")
                 state.code = resp.code
                 state.images = []
                 state.last_error = None
                 revision += 1
 
             case "execute":
-                log(f"Executing script: {resp.step_name}")
                 if not resp.code:
                     log("ERROR: No script to execute")
                     state.done = True
@@ -89,7 +86,7 @@ def run_agent(
                 result = run_blender_script_local(
                     resp.code,
                     blender_path=blender_path,
-                    timeout=120,
+                    timeout=resp.data.get("timeout", 120),
                 )
                 state.last_output = result.get("output", "")
                 if result.get("error"):
@@ -100,14 +97,11 @@ def run_agent(
                     log("Script executed successfully")
 
             case "render":
-                log(f"Rendering: {resp.step_name}")
                 if not resp.render_scripts:
                     log("ERROR: No render scripts provided")
                     state.done = True
                     break
-                prefix = "render"
-                if resp.progress:
-                    prefix = resp.progress.stage or "render"
+                prefix = resp.data.get("prefix", "render")
                 image_paths, error = render_views(
                     resp.render_scripts,
                     state.output_dir,
@@ -123,18 +117,25 @@ def run_agent(
                     state.last_error = None
                     log(f"Rendered {len(image_paths)} view(s)")
 
+                if state.code:
+                    generation_id = os.path.basename(state.output_dir)
+                    blend_filename = f"{prefix}-{revision}.blend"
+                    try:
+                        export_blender_file_local(state.code, generation_id, filename=blend_filename)
+                        log(f"Saved .blend snapshot: {blend_filename}")
+                    except Exception as e:
+                        log(f"Warning: could not save .blend snapshot: {e}")
+
             case "done":
-                log("Generation complete, exporting...")
                 state.done = True
 
             case _:
-                log(f"Unknown action: {resp.action}")
-                state.done = True
+                log(f"Unrecognised action '{resp.action}' — skipping")
 
-    # --- Step 4: End session ---
+    # --- End session ---
     log("Ending session...")
     try:
-        api.end_session(state.session.session_token)
+        api.end_session(state.session.generation_id)
         log("Session ended.")
     except Exception as e:
         log(f"Warning: Failed to end session cleanly: {e}")

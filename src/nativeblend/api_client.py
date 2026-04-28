@@ -7,7 +7,7 @@ import tenacity
 from typing import Optional, Dict, Any, Callable
 from urllib.parse import urljoin
 from .config import config
-from .agent.states import AgentState, SessionInfo, StepResponse, Progress
+from .agent.states import AgentState, SessionInfo, StepResponse
 
 
 class AgentAPIClient:
@@ -59,29 +59,28 @@ class AgentAPIClient:
         response.raise_for_status()
         data = response.json()
         return SessionInfo(
-            session_token=data["session_token"],
-            enhanced_prompt=data.get("enhanced_prompt", prompt),
-            phases=[p.get("goal", "") for p in data.get("phases", [])],
+            generation_id=data["generation_id"],
+            message=data.get("message", ""),
         )
 
-    @tenacity.retry(
-        wait=tenacity.wait_none(),
-        stop=tenacity.stop_after_attempt(3),
-        retry=tenacity.retry_if_exception_type(requests.RequestException),
-    )
+    # @tenacity.retry(
+    #     wait=tenacity.wait_none(),
+    #     stop=tenacity.stop_after_attempt(3),
+    #     retry=tenacity.retry_if_exception_type(requests.RequestException),
+    # )
     def step(
         self,
-        session_token: str,
+        generation_id: str,
         state: AgentState,
     ) -> StepResponse:
         """Get the next action from the API.
 
         Args:
-            session_token: Session token from start_session().
+            generation_id: Generation ID from start_session().
             state: Current agent state (code, images, errors).
 
         Returns:
-            Parsed StepResponse with action, step_name, code, progress, etc.
+            Parsed StepResponse with action, message, code, render_scripts, and data.
         """
         # Build context from state
         context = {}
@@ -107,11 +106,11 @@ class AgentAPIClient:
                 self._url(f"{self._v2}/llm/step"),
                 headers=headers,
                 data={
-                    "session_token": session_token,
+                    "generation_id": generation_id,
                     "context": json.dumps(context),
                 },
                 files=files if files else None,
-                timeout=300,
+                timeout=self.timeout,
             )
             response.raise_for_status()
             return self._parse_step_response(response.json())
@@ -121,14 +120,14 @@ class AgentAPIClient:
 
     def end_session(
         self,
-        session_token: str,
+        generation_id: str,
     ) -> Dict[str, Any]:
         """Finalize and close a generation session.
 
         Returns:
             {"generation_id": str}
         """
-        payload: Dict[str, Any] = {"session_token": session_token}
+        payload: Dict[str, Any] = {"generation_id": generation_id}
 
         response = requests.post(
             self._url(f"{self._v2}/session/end"),
@@ -141,20 +140,16 @@ class AgentAPIClient:
 
     def _parse_step_response(self, data: dict) -> StepResponse:
         """Parse a raw step response dict into a StepResponse dataclass."""
-        progress = None
-        if data.get("progress"):
-            p = data["progress"]
-            progress = Progress(
-                phase=p.get("phase", 0),
-                total_phases=p.get("total_phases", 0),
-                stage=p.get("stage", ""),
-            )
         return StepResponse(
             action=data.get("action", "done"),
-            step_name=data.get("step_name", ""),
+            message=data.get("message", ""),
             code=data.get("code"),
-            progress=progress,
             render_scripts=data.get("render_scripts"),
+            data={
+                k: v
+                for k, v in data.items()
+                if k not in {"action", "message", "code", "render_scripts"}
+            },
         )
 
 
@@ -483,6 +478,20 @@ class APIClient:
             )
             if response.status_code == 200:
                 return response.json()
+            return None
+        except requests.RequestException:
+            return None
+
+    def get_generation_code(self, generation_id: str) -> Optional[str]:
+        """Fetch the latest working Blender code for a generation."""
+        try:
+            response = requests.get(
+                self._url(f"generate/{generation_id}/code"),
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+            if response.status_code == 200:
+                return response.json().get("code")
             return None
         except requests.RequestException:
             return None
