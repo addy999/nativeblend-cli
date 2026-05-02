@@ -50,6 +50,7 @@ class BuildStyle(str, Enum):
     retro = "retro"
     pixel_art = "pixel-art"
     gamecube = "gamecube"
+    # jrpg = "jrpg"
 
 
 # Initialize console for rich output
@@ -460,7 +461,7 @@ def _build_local(
 
     # Run the agent
     try:
-        with console.status("[cyan]→[/cyan] Running local agent..."):
+        with console.status("[cyan]→[/cyan] Building..."):
             state = run_agent(
                 state,
                 agent_api,
@@ -468,10 +469,10 @@ def _build_local(
                 on_message=on_message,
             )
     except KeyboardInterrupt:
-        console.print("\n[yellow]⚠[/yellow] Generation cancelled by user")
+        console.print("\n[yellow]⚠[/yellow] Build cancelled by user")
         raise typer.Exit(1)
     except Exception as e:
-        console.print(f"[red]✗[/red] Generation failed: {e}")
+        console.print(f"[red]✗[/red] Build failed: {e}")
         if verbose:
             import traceback
 
@@ -483,7 +484,7 @@ def _build_local(
         console.print()
         console.print(
             Panel(
-                f"[bold red]Generation failed[/bold red]\n\n"
+                f"[bold red]Build failed[/bold red]\n\n"
                 f"[bold]Prompt:[/bold] {prompt}\n"
                 f"[bold]Error:[/bold] {state.error}\n"
                 f"[bold]Elapsed time:[/bold] {elapsed:.1f}s",
@@ -614,7 +615,7 @@ def _build_cloud(
         generation = task_data.get("generation", "")
 
         if not generation:
-            console.print(f"[yellow]⚠[/yellow] Skipping task: missing generation ID")
+            console.print(f"[yellow]⚠[/yellow] Skipping task: missing build ID")
             return
 
         label = _describe_task(artifact_path)
@@ -896,9 +897,9 @@ def build(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
     ),
-    cloud: bool = typer.Option(
-        False, "--cloud", help="Use cloud-based generation (legacy mode)"
-    ),
+    # cloud: bool = typer.Option(
+    #     False, "--cloud", help="Use cloud-based generation (legacy mode)"
+    # ),
     mock: bool = typer.Option(
         False, "--mock", hidden=True, help="Use server-side mock endpoints for testing"
     ),
