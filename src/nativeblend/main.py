@@ -897,9 +897,9 @@ def build(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
     ),
-    # cloud: bool = typer.Option(
-    #     False, "--cloud", help="Use cloud-based generation (legacy mode)"
-    # ),
+    cloud: bool = typer.Option(
+        False, "--cloud", help="Use cloud-based generation (legacy mode)"
+    ),
     mock: bool = typer.Option(
         False, "--mock", hidden=True, help="Use server-side mock endpoints for testing"
     ),
