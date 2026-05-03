@@ -42,6 +42,7 @@ class AgentAPIClient:
         wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
         stop=tenacity.stop_after_attempt(3),
         retry=tenacity.retry_if_exception_type(requests.RequestException),
+        reraise=True,
     )
     def start_session(
         self,

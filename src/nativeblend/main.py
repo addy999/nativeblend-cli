@@ -472,7 +472,9 @@ def _build_local(
         console.print("\n[yellow]⚠[/yellow] Build cancelled by user")
         raise typer.Exit(1)
     except Exception as e:
-        console.print(f"[red]✗[/red] Build failed: {e}")
+        console.print(
+            f"[red]✗[/red] Build failed: {e.response.json().get('detail', '') if hasattr(e, 'response') else str(e)}"  # type: ignore
+        )
         if verbose:
             import traceback
 
