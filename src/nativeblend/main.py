@@ -4,6 +4,7 @@ NativeBlend CLI - Build 3D models in Blender using natural language prompts
 """
 
 import os
+import shutil
 import threading
 from enum import Enum
 
@@ -50,7 +51,7 @@ class BuildStyle(str, Enum):
     retro = "retro"
     pixel_art = "pixel-art"
     gamecube = "gamecube"
-    # jrpg = "jrpg"
+    jrpg = "jrpg"
 
 
 # Initialize console for rich output
@@ -525,6 +526,114 @@ def _build_local(
     )
 
 
+def _edit_local(
+    blend_file: str,
+    prompt: str,
+    mode: str,
+    style: str,
+    verbose: bool = False,
+    mock: bool = False,
+) -> None:
+    """Run the local editor loop against an uploaded .blend file."""
+    import time as _time
+    import uuid
+
+    start_time = _time.time()
+    blend_path = FilePath(blend_file)
+    if not blend_path.is_file() or blend_path.suffix.lower() != ".blend":
+        console.print("[red]✗[/red] Provide an existing .blend file")
+        raise typer.Exit(1)
+
+    blender_path = config.get_blender_path()
+    if not check_blender_exists(blender_path):
+        prompt_blender_download()
+        raise typer.Exit(1)
+
+    generation_id = str(uuid.uuid4())[:8]
+    output_dir = os.path.join(
+        config.get("output.default_dir"), f"local_edit_{generation_id}"
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    console.print(f"[dim]Output directory: {output_dir}[/dim]")
+
+    # Work on a copy so the original .blend is never overwritten.
+    working_blend = os.path.join(output_dir, f"working_{blend_path.name}")
+    shutil.copy2(str(blend_path), working_blend)
+
+    agent_api = AgentAPIClient(mock=mock)
+    state = AgentState(
+        prompt=prompt,
+        workflow="edit",
+        blend_file=working_blend,
+        original_blend_file=str(blend_path),
+        mode=mode,
+        style=style,
+        output_dir=output_dir,
+    )
+
+    def on_log(msg: str) -> None:
+        if verbose:
+            console.print(f"[cyan]→[/cyan] {msg}")
+
+    def on_message(msg: str) -> None:
+        console.print(f"[cyan]→[/cyan] {msg}")
+
+    try:
+        with console.status("[cyan]→[/cyan] Editing..."):
+            state = run_agent(state, agent_api, on_log=on_log, on_message=on_message)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]⚠[/yellow] Edit cancelled by user")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Edit failed: {e}")
+        if verbose:
+            import traceback
+
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise typer.Exit(1)
+
+    if state.error:
+        console.print(f"[red]✗[/red] Edit failed: {state.error}")
+        raise typer.Exit(1)
+
+    if state.code:
+        try:
+            console.print("[cyan]→[/cyan] Exporting edited Blender file...")
+            blend_path_out = export_blender_file_local(
+                state.code,
+                f"local_edit_{generation_id}",
+                blend_file_path=state.blend_file,
+            )
+            console.print(f"[green]✓[/green] Blender file: {blend_path_out}")
+
+            console.print("[cyan]→[/cyan] Exporting edited GLB model...")
+            glb_path = export_glb_local(
+                state.code,
+                f"local_edit_{generation_id}",
+                blend_file_path=state.blend_file,
+            )
+            console.print(f"[green]✓[/green] Model file: {glb_path}")
+        except Exception as e:
+            console.print(f"[yellow]⚠[/yellow] Export failed: {e}")
+
+    elapsed = _time.time() - start_time
+    console.print()
+    console.print(
+        Panel(
+            f"[bold green]Model edit completed![/bold green]\n\n"
+            f"[bold]Original:[/bold] {blend_file}\n"
+            f"[bold]Working copy:[/bold] {state.blend_file}\n"
+            f"[bold]Prompt:[/bold] {prompt}\n"
+            f"[bold]Mode:[/bold] {mode}\n"
+            f"[bold]Style:[/bold] {style}\n"
+            f"[bold]Elapsed time:[/bold] {elapsed:.1f}s\n"
+            f"[bold]Output:[/bold] {output_dir}",
+            title="Success",
+            border_style="green",
+        )
+    )
+
+
 def _build_cloud(
     prompt: str,
     image_url: Optional[str],
@@ -968,7 +1077,55 @@ def build(
         )
 
 
-# ---- Builds subcommands ----
+@app.command("edit")
+def edit(
+    blend_file: str = typer.Argument(help="Local .blend file to edit"),
+    prompt: str = typer.Argument(help="Natural language edit instruction"),
+    mode: Optional[BuildMode] = typer.Option(
+        None,
+        "--mode",
+        "-m",
+        help="Edit mode (default: from config or 'standard')",
+    ),
+    style: Optional[BuildStyle] = typer.Option(
+        None,
+        "--style",
+        "-s",
+        help="Visual style (default: from config or 'auto')",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Enable verbose output"
+    ),
+    mock: bool = typer.Option(
+        False, "--mock", hidden=True, help="Use server-side mock endpoints for testing"
+    ),
+):
+    """Edit an existing local .blend file with a natural language instruction."""
+    api_key = config.get_api_key()
+    if not api_key:
+        console.print(
+            "[red]✗[/red] Not authenticated. Run 'nativeblend auth login' first."
+        )
+        raise typer.Exit(1)
+
+    if mode is None:
+        mode = BuildMode(config.get("generation.default_mode", BuildMode.standard))
+    if style is None:
+        style = BuildStyle(config.get("generation.default_style", BuildStyle.auto))
+
+    console.print(f"[bold blue]Editing model:[/bold blue] {blend_file}")
+    console.print(f"[bold blue]Edit prompt:[/bold blue] {prompt}")
+    console.print(f"[bold blue]Mode:[/bold blue] {mode}")
+    console.print(f"[bold blue]Style:[/bold blue] {style}")
+
+    _edit_local(
+        blend_file=blend_file,
+        prompt=prompt,
+        mode=str(mode.value if mode else "standard"),
+        style=str(style.value if style else "auto"),
+        verbose=verbose,
+        mock=mock,
+    )
 
 
 @gen_app.command("list")

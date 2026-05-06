@@ -24,6 +24,8 @@ class SessionInfo:
     """session data returned by /v2/session/start."""
 
     generation_id: str
+    workflow: str = "build"
+    current_blend_artifact_id: Optional[str] = None
     message: str = ""
 
 
@@ -33,6 +35,9 @@ class AgentState:
 
     # Input
     prompt: str
+    workflow: str = "build"
+    blend_file: Optional[str] = None
+    original_blend_file: Optional[str] = None
     mode: str = "standard"
     style: str = "auto"
     image_url: Optional[str] = None
@@ -42,6 +47,8 @@ class AgentState:
 
     # Current execution state
     code: Optional[str] = None
+    edit_code: Optional[str] = None
+    current_blend_artifact_id: Optional[str] = None
     images: list[str] = field(default_factory=list)  # paths to rendered PNGs
 
     # Last execute result

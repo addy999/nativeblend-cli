@@ -85,8 +85,16 @@ def run_blender_script_local(
     blender_path: str,
     artifact_path: str | None = None,
     timeout: int = 60,
+    blend_file_path: str | None = None,
+    is_editor_mode: bool | None = None,
 ) -> dict:
-    """Execute a Blender script in the current process using a temporary file."""
+    """Execute a Blender script in the current process using a temporary file.
+
+    When ``blend_file_path`` is provided the script runs against an existing
+    .blend file rather than a blank scene.  If ``is_editor_mode`` is True
+    (or auto-detected from blend_file_path when None) the scene-creation
+    wrapper is skipped so the delta script operates on the loaded scene.
+    """
 
     safety_violation = _check_script_safety(script_code)
     if safety_violation:
@@ -97,13 +105,40 @@ def run_blender_script_local(
         prompt_blender_download()
         raise typer.Exit(1)
 
-    # Normalize the script code
+    # Normalise the script code
     normalized_script = script_code.replace(
         "bpy.ops.wm.read_factory_settings(use_empty=True)", ""
     ).strip()
     normalized_script = _normalize_blender_script(normalized_script)
 
-    full_script_code = f"""
+    # Decide whether to use the minimal wrapper (editor mode) or the
+    # full scene-creation wrapper (build mode).
+    editor_mode = is_editor_mode if is_editor_mode is not None else bool(blend_file_path)
+
+    if editor_mode:
+        # Minimal wrapper: just import modules and run the delta script
+        # against the already-loaded blend file.
+        full_script_code = f"""
+import bpy
+import os
+
+# --- Editor delta script ---
+{normalized_script}
+# --- End editor delta script ---
+"""
+    elif blend_file_path:
+        # Opening an existing blend file, no scene setup needed.
+        full_script_code = f"""
+import bpy
+import os
+
+# --- Your script starts here ---
+{normalized_script}
+# --- Your script ends here ---
+"""
+    else:
+        # Full scene creation (build mode from scratch).
+        full_script_code = f"""
 import bpy
 import os
 
@@ -135,13 +170,14 @@ bpy.ops.object.delete()
         os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
 
     try:
-        command = [
-            blender_path,
+        command = [blender_path]
+        if blend_file_path:
+            command.append(blend_file_path)
+        command.extend([
             "--background",
-            "--factory-startup",  # Disable all add-ons and user preferences
             "--python",
             temp_file_path,
-        ]
+        ])
 
         result = subprocess.check_output(
             command,
@@ -200,6 +236,8 @@ def export_blender_file_local(
     script_code: str,
     generation_id: str,
     filename: str = "final_output.blend",
+    blend_file_path: str | None = None,
+    is_editor_mode: bool | None = None,
 ) -> str:
     """Executes a Blender Python script and saves the resulting scene as a .blend file."""
 
@@ -218,7 +256,12 @@ bpy.ops.wm.save_as_mainfile(filepath=output_file, compress=True)
 print(f"Scene saved to {{output_file}}")
 """
     result = run_blender_script_local(
-        full_script, config.get_blender_path(), artifact_path=save_path, timeout=300
+        full_script,
+        config.get_blender_path(),
+        artifact_path=save_path,
+        timeout=300,
+        blend_file_path=blend_file_path,
+        is_editor_mode=is_editor_mode,
     )
 
     if result.get("error"):
@@ -231,6 +274,8 @@ def export_glb_local(
     script_code: str,
     generation_id: str,
     filename: str = "final_output.glb",
+    blend_file_path: str | None = None,
+    is_editor_mode: bool | None = None,
 ) -> str:
     """Executes a Blender Python script and exports the scene as a GLB file."""
 
@@ -249,7 +294,12 @@ bpy.ops.export_scene.gltf(filepath=output_file, export_format='GLB', export_appl
 print(f"Scene exported to {{output_file}}")
 """
     result = run_blender_script_local(
-        full_script, config.get_blender_path(), artifact_path=save_path, timeout=300
+        full_script,
+        config.get_blender_path(),
+        artifact_path=save_path,
+        timeout=300,
+        blend_file_path=blend_file_path,
+        is_editor_mode=is_editor_mode,
     )
 
     if result.get("error"):

@@ -66,55 +66,93 @@ class AgentAPIClient:
         data = response.json()
         return SessionInfo(
             generation_id=data["generation_id"],
+            workflow=data.get("workflow", "build"),
+            current_blend_artifact_id=data.get("current_blend_artifact_id"),
             message=data.get("message", ""),
         )
+
 
     @tenacity.retry(
         wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
         stop=tenacity.stop_after_attempt(3),
         retry=tenacity.retry_if_exception_type(requests.RequestException),
+        reraise=True,
     )
+    def start_editor_session(
+        self,
+        prompt: str,
+        blend_file: str,
+        mode: str = "standard",
+        style: str = "auto",
+        image_url: Optional[str] = None,
+    ) -> SessionInfo:
+        """Initialize an editor session by uploading a local .blend file."""
+        data: Dict[str, Any] = {"prompt": prompt, "mode": mode, "style": style}
+        if image_url:
+            data["image_url"] = image_url
+
+        endpoint = "v2/mock/editor/session/start" if self._v2 == "v2/mock" else "v2/editor/session/start"
+        with open(blend_file, "rb") as f:
+            response = requests.post(
+                self._url(endpoint),
+                headers=self._get_headers(),
+                data=data,
+                files={"blend_file": (blend_file.split("/")[-1], f, "application/octet-stream")},
+                timeout=self.timeout,
+            )
+        response.raise_for_status()
+        payload = response.json()
+        return SessionInfo(
+            generation_id=payload["generation_id"],
+            workflow=payload.get("workflow", "edit"),
+            current_blend_artifact_id=payload.get("current_blend_artifact_id"),
+            message=payload.get("message", ""),
+        )
+
     def step(
         self,
         generation_id: str,
         state: AgentState,
     ) -> StepResponse:
-        """Get the next action from the API.
+        """Get the next build action from the API."""
+        return self._step_to_endpoint(generation_id, state, "llm/step")
 
-        Args:
-            generation_id: Generation ID from start_session().
-            state: Current agent state (code, images, errors).
+    def editor_step(
+        self,
+        generation_id: str,
+        state: AgentState,
+    ) -> StepResponse:
+        """Get the next editor action from the API."""
+        return self._step_to_endpoint(generation_id, state, "editor/llm/step")
 
-        Returns:
-            Parsed StepResponse with action, message, code, render_scripts, and data.
-        """
-        # Build context from state
+    def _step_to_endpoint(
+        self,
+        generation_id: str,
+        state: AgentState,
+        endpoint_suffix: str,
+    ) -> StepResponse:
         context = {}
         if state.code:
             context["code"] = state.code
+        if state.edit_code:
+            context["edit_code"] = state.edit_code
         if state.last_output:
             context["output"] = state.last_output
         if state.last_error:
             context["error"] = state.last_error
-
-        image_paths = state.images if state.images else []
+        if state.current_blend_artifact_id:
+            context["current_blend_artifact_id"] = state.current_blend_artifact_id
 
         headers = self._get_headers()
         files = []
-        if image_paths:
-            for path in image_paths:
-                files.append(
-                    ("images", (path.split("/")[-1], open(path, "rb"), "image/png"))
-                )
+        for path in state.images or []:
+            files.append(("images", (path.split("/")[-1], open(path, "rb"), "image/png")))
 
         try:
             response = requests.post(
-                self._url(f"{self._v2}/llm/step"),
+                self._url(f"{self._v2}/{endpoint_suffix}"),
                 headers=headers,
-                data={
-                    "generation_id": generation_id,
-                    "context": json.dumps(context),
-                },
+                data={"generation_id": generation_id, "context": json.dumps(context)},
                 files=files if files else None,
                 timeout=self.timeout,
             )

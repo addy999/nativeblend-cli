@@ -10,6 +10,8 @@ gracefully):
     execute      - run the provided script in headless Blender
     render       - render views using provided render scripts
     done         - generation complete, end the session
+
+In editor workflow (state.workflow == "edit"), ``execute`` and ``render`` run against state.blend_file.
 """
 
 from __future__ import annotations
@@ -18,7 +20,10 @@ import os
 from typing import Optional, Callable
 
 from ..api_client import AgentAPIClient
-from ..executor import run_blender_script_local, export_blender_file_local
+from ..executor import (
+    run_blender_script_local,
+    export_blender_file_local,
+)
 from ..config import config
 from .states import AgentState, StepResponse
 from .renderer import render_views
@@ -53,13 +58,29 @@ def run_agent(
             on_message(msg)
 
     # --- Start session ---
-    log("Starting generation session...")
-    state.session = api.start_session(
-        prompt=state.prompt,
-        mode=state.mode,
-        style=state.style,
-        image_url=state.image_url,
+    log(
+        "Starting editor session..."
+        if state.workflow == "edit"
+        else "Starting generation session..."
     )
+    if state.workflow == "edit":
+        if not state.blend_file:
+            raise ValueError("Editor workflow requires a .blend file")
+        state.session = api.start_editor_session(
+            prompt=state.prompt,
+            blend_file=state.blend_file,
+            mode=state.mode,
+            style=state.style,
+            image_url=state.image_url,
+        )
+        state.current_blend_artifact_id = state.session.current_blend_artifact_id
+    else:
+        state.session = api.start_session(
+            prompt=state.prompt,
+            mode=state.mode,
+            style=state.style,
+            image_url=state.image_url,
+        )
     show(state.session.message)
 
     # --- Step loop ---
@@ -67,7 +88,11 @@ def run_agent(
 
     while not state.done:
         try:
-            resp: StepResponse = api.step(state.session.generation_id, state)
+            resp: StepResponse = (
+                api.editor_step(state.session.generation_id, state)
+                if state.workflow == "edit"
+                else api.step(state.session.generation_id, state)
+            )
         except KeyboardInterrupt:
             log("Cancellation requested by user")
             try:
@@ -103,6 +128,11 @@ def run_agent(
 
             case "update_code":
                 state.code = resp.code
+                if state.workflow == "edit":
+                    state.edit_code = resp.code
+                state.current_blend_artifact_id = resp.data.get(
+                    "current_blend_artifact_id", state.current_blend_artifact_id
+                )
                 state.images = []
                 state.last_error = None
                 revision += 1
@@ -113,17 +143,31 @@ def run_agent(
                     state.done = True
                     break
                 blender_path = config.get_blender_path()
+                is_editor = state.workflow == "edit"
+                should_save_blend = bool(resp.data.get("save_blend", is_editor))
+                script_to_run = resp.code
+                if is_editor and state.blend_file and should_save_blend:
+                    # Append the save command to the same script so it runs in
+                    # the same Blender process that applied the edits.
+                    script_to_run = (
+                        resp.code
+                        + f"\nimport bpy\nbpy.ops.wm.save_as_mainfile(filepath={state.blend_file!r}, compress=True)\n"
+                    )
                 result = run_blender_script_local(
-                    resp.code,
+                    script_to_run,
                     blender_path=blender_path,
                     timeout=resp.data.get("timeout", 120),
+                    blend_file_path=state.blend_file if is_editor else None,
+                    is_editor_mode=is_editor or None,
                 )
-                state.last_output = result.get("output", "")
                 if result.get("error"):
                     state.last_error = result["error"]
                     log(f"Execution error: {state.last_error}")
                 else:
+                    state.last_output = result.get("output", "")
                     state.last_error = None
+                    if is_editor and state.blend_file and should_save_blend:
+                        log("Edited .blend saved locally")
                     log("Script executed successfully")
 
             case "render":
@@ -132,11 +176,13 @@ def run_agent(
                     state.done = True
                     break
                 prefix = resp.data.get("prefix", "render")
+                is_editor = state.workflow == "edit"
                 image_paths, error = render_views(
                     resp.render_scripts,
                     state.output_dir,
                     prefix=prefix,
                     revision=revision,
+                    blend_file_path=state.blend_file if is_editor else None,
                 )
                 if error:
                     log(f"Render error: {error}")
@@ -152,7 +198,11 @@ def run_agent(
                     blend_filename = f"{prefix}-{revision}.blend"
                     try:
                         export_blender_file_local(
-                            state.code, generation_id, filename=blend_filename
+                            state.code,
+                            generation_id,
+                            filename=blend_filename,
+                            blend_file_path=state.blend_file if is_editor else None,
+                            is_editor_mode=is_editor or None,
                         )
                         log(f"Saved .blend snapshot: {blend_filename}")
                     except Exception as e:

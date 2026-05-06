@@ -27,6 +27,7 @@ def _finalize_script(scene_script: str, output_path: str) -> str:
 def render_blender_script(
     scene_script: str,
     output_path: str,
+    blend_file_path: str | None = None,
 ) -> dict:
     """Finalize a scene-setup script with the output path, then execute it.
 
@@ -42,7 +43,11 @@ def render_blender_script(
     final_script = _finalize_script(scene_script, output_path)
     blender_path = config.get_blender_path()
     result = run_blender_script_local(
-        final_script, blender_path=blender_path, artifact_path=output_path, timeout=120,
+        final_script,
+        blender_path=blender_path,
+        artifact_path=output_path,
+        timeout=120,
+        blend_file_path=blend_file_path,
     )
 
     if result.get("error"):
@@ -60,6 +65,7 @@ def render_views(
     *,
     prefix: str = "render",
     revision: int = 1,
+    blend_file_path: str | None = None,
 ) -> tuple[list[str], Optional[str]]:
     """Run a list of scene-setup scripts in parallel.
 
@@ -89,7 +95,7 @@ def render_views(
 
     def _render(pair: tuple[str, str]) -> dict:
         scene_script, path = pair
-        return render_blender_script(scene_script, path)
+        return render_blender_script(scene_script, path, blend_file_path=blend_file_path)
 
     with ThreadPoolExecutor(max_workers=len(pairs)) as executor:
         futures = {executor.submit(_render, pair): pair for pair in pairs}
