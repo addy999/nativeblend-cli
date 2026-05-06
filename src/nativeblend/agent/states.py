@@ -40,7 +40,7 @@ class AgentState:
     original_blend_file: Optional[str] = None
     mode: str = "standard"
     style: str = "auto"
-    image_url: Optional[str] = None
+    image_path: Optional[str] = None  # Local path to reference image file
 
     # Session
     session: Optional[SessionInfo] = None

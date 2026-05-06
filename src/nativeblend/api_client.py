@@ -38,6 +38,28 @@ class AgentAPIClient:
         base = self.base_url if self.base_url.endswith("/") else self.base_url + "/"
         return urljoin(base, path.lstrip("/"))
 
+    def _download_image(self, image_url: str) -> Optional[tuple[bytes, str]]:
+        """Download image from URL and return (image_bytes, filename)."""
+
+        # Extract filename from URL or use default
+        import urllib.request
+        from urllib.parse import urlparse
+
+        parsed = urlparse(image_url)
+        filename = parsed.path.split("/")[-1] or "reference.jpg"
+        if "." not in filename:
+            filename = "reference.jpg"
+
+        with requests.get(
+            image_url, stream=True, headers={"User-Agent": "Mozilla/5.0"}
+        ) as r:
+            r.raise_for_status()
+            with open(filename, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+        return filename
+
     @tenacity.retry(
         wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
         stop=tenacity.stop_after_attempt(3),
@@ -49,20 +71,73 @@ class AgentAPIClient:
         prompt: str,
         mode: str = "standard",
         style: str = "auto",
-        image_url: Optional[str] = None,
+        image_path: Optional[str] = None,
     ) -> SessionInfo:
-        """Initialize a generation session."""
-        payload: Dict[str, Any] = {"prompt": prompt, "mode": mode, "style": style}
-        if image_url:
-            payload["image_url"] = image_url
+        """Initialize a generation session.
 
-        response = requests.post(
-            self._url(f"{self._v2}/session/start"),
-            headers={**self._get_headers(), "Content-Type": "application/json"},
-            json=payload,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
+        Args:
+            prompt: Natural language description of the 3D model
+            mode: Generation mode - "express", "standard", or "pro"
+            style: Visual style - "auto", "low-poly", "stylized", etc.
+            image_path: Optional local path or URL to a reference image file
+        """
+        data: Dict[str, Any] = {"prompt": prompt, "mode": mode, "style": style}
+
+        files: Optional[Dict[str, Any]] = None
+        file_handle = None
+        bytes_io = None
+
+        if image_path:
+            # Check if image_path is a URL
+            if image_path.startswith(("http://", "https://")):
+                filename = self._download_image(image_path)
+                mime_type = "image/png"
+                if filename.lower().endswith((".jpg", ".jpeg")):
+                    mime_type = "image/jpeg"
+                elif filename.lower().endswith(".webp"):
+                    mime_type = "image/webp"
+                from io import BytesIO
+
+                # bytes_io = BytesIO(image_bytes)
+                files = {"image": (filename, open(filename, "rb"), mime_type)}
+            else:
+                # Local file
+                import os
+
+                filename = os.path.basename(image_path)
+                mime_type = "image/png"
+                if filename.lower().endswith((".jpg", ".jpeg")):
+                    mime_type = "image/jpeg"
+                elif filename.lower().endswith(".webp"):
+                    mime_type = "image/webp"
+                file_handle = open(image_path, "rb")
+                files = {"image": (filename, file_handle, mime_type)}
+
+        try:
+            if files:
+                response = requests.post(
+                    self._url(f"{self._v2}/session/start"),
+                    headers=self._get_headers(),  # No Content-Type, requests sets multipart boundary
+                    data=data,
+                    files=files,
+                    timeout=self.timeout,
+                )
+            else:
+                response = requests.post(
+                    self._url(f"{self._v2}/session/start"),
+                    headers={
+                        **self._get_headers(),
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    data=data,
+                    timeout=self.timeout,
+                )
+            response.raise_for_status()
+        finally:
+            if file_handle:
+                file_handle.close()
+            if bytes_io:
+                bytes_io.close()
         data = response.json()
         return SessionInfo(
             generation_id=data["generation_id"],
@@ -70,7 +145,6 @@ class AgentAPIClient:
             current_blend_artifact_id=data.get("current_blend_artifact_id"),
             message=data.get("message", ""),
         )
-
 
     @tenacity.retry(
         wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
@@ -84,23 +158,77 @@ class AgentAPIClient:
         blend_file: str,
         mode: str = "standard",
         style: str = "auto",
-        image_url: Optional[str] = None,
+        image_path: Optional[str] = None,
     ) -> SessionInfo:
         """Initialize an editor session by uploading a local .blend file."""
         data: Dict[str, Any] = {"prompt": prompt, "mode": mode, "style": style}
-        if image_url:
-            data["image_url"] = image_url
 
-        endpoint = "v2/mock/editor/session/start" if self._v2 == "v2/mock" else "v2/editor/session/start"
-        with open(blend_file, "rb") as f:
+        endpoint = (
+            "v2/mock/editor/session/start"
+            if self._v2 == "v2/mock"
+            else "v2/editor/session/start"
+        )
+
+        files_to_upload: Dict[str, Any] = {}
+        file_handles: list = []
+
+        # Add blend file
+        blend_filename = blend_file.split("/")[-1]
+        blend_f = open(blend_file, "rb")
+        file_handles.append(blend_f)
+        files_to_upload["blend_file"] = (
+            blend_filename,
+            blend_f,
+            "application/octet-stream",
+        )
+
+        # Add image if provided (download from URL if needed)
+        image_bytes_io = None
+        if image_path:
+            if image_path.startswith(("http://", "https://")):
+                img_filename = self._download_image(image_path)
+                mime_type = "image/png"
+                if img_filename.lower().endswith((".jpg", ".jpeg")):
+                    mime_type = "image/jpeg"
+                elif img_filename.lower().endswith(".webp"):
+                    mime_type = "image/webp"
+                from io import BytesIO
+
+                # image_bytes_io = BytesIO(image_bytes)
+                files_to_upload["image"] = (
+                    img_filename,
+                    open(img_filename, "rb"),
+                    mime_type,
+                )
+            else:
+                # Local file
+                import os
+
+                img_filename = os.path.basename(image_path)
+                mime_type = "image/png"
+                if img_filename.lower().endswith((".jpg", ".jpeg")):
+                    mime_type = "image/jpeg"
+                elif img_filename.lower().endswith(".webp"):
+                    mime_type = "image/webp"
+                img_f = open(image_path, "rb")
+                file_handles.append(img_f)
+                files_to_upload["image"] = (img_filename, img_f, mime_type)
+
+        try:
             response = requests.post(
                 self._url(endpoint),
-                headers=self._get_headers(),
+                headers=self._get_headers(),  # No Content-Type for multipart
                 data=data,
-                files={"blend_file": (blend_file.split("/")[-1], f, "application/octet-stream")},
+                files=files_to_upload,
                 timeout=self.timeout,
             )
-        response.raise_for_status()
+            response.raise_for_status()
+        finally:
+            for f in file_handles:
+                f.close()
+            if image_bytes_io:
+                image_bytes_io.close()
+
         payload = response.json()
         return SessionInfo(
             generation_id=payload["generation_id"],
@@ -146,7 +274,9 @@ class AgentAPIClient:
         headers = self._get_headers()
         files = []
         for path in state.images or []:
-            files.append(("images", (path.split("/")[-1], open(path, "rb"), "image/png")))
+            files.append(
+                ("images", (path.split("/")[-1], open(path, "rb"), "image/png"))
+            )
 
         try:
             response = requests.post(

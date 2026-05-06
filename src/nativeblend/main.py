@@ -403,7 +403,7 @@ def config_set(key: str, value: str):
 
 def _build_local(
     prompt: str,
-    image_url: Optional[str],
+    image_path: Optional[str],
     mode: str,
     style: str,
     verbose: bool = False,
@@ -437,7 +437,7 @@ def _build_local(
         prompt=prompt,
         mode=mode,
         style=style,
-        image_url=image_url,
+        image_path=image_path,
         output_dir="",  # Will be set after session start
     )
 
@@ -549,6 +549,7 @@ def _edit_local(
     prompt: str,
     mode: str,
     style: str,
+    image_path: Optional[str] = None,
     verbose: bool = False,
     mock: bool = False,
 ) -> None:
@@ -583,6 +584,7 @@ def _edit_local(
         original_blend_file=str(blend_path),
         mode=mode,
         style=style,
+        image_path=image_path,
         output_dir="",  # Will be set after session start with server-side generation_id
     )
 
@@ -1257,29 +1259,27 @@ def build(
     if style is None:
         style = BuildStyle(config.get("generation.default_style", BuildStyle.auto))
 
-    # Resolve local image path to base64 data URL if needed
-    resolved_image_url = image_url
-    if image_url and FilePath(image_url).is_file():
-        if verbose:
-            console.print("[cyan]→[/cyan] Converting local image to base64...")
-        path = FilePath(image_url)
-        mime_type, _ = mimetypes.guess_type(str(path))
-        if not mime_type:
-            mime_type = "image/png"
-        data = path.read_bytes()
-        b64 = base64.b64encode(data).decode("utf-8")
-        resolved_image_url = f"data:{mime_type};base64,{b64}"
+    # Validate image path or URL if provided
+    image_path: Optional[str] = None
+    if image_url:
+        if FilePath(image_url).is_file():
+            image_path = image_url
+        elif image_url.startswith(("http://", "https://")):
+            # URL - let the API client handle downloading for local mode
+            image_path = image_url
+        else:
+            console.print(f"[yellow]⚠[/yellow] Image path not found: {image_url}")
 
     console.print(f"[bold blue]Building model for prompt:[/bold blue] {prompt}")
-    if resolved_image_url:
-        console.print(f"[bold blue]Reference image:[/bold blue] {image_url}")
+    if image_path:
+        console.print(f"[bold blue]Reference image:[/bold blue] {image_path}")
     console.print(f"[bold blue]Mode:[/bold blue] {mode}")
     console.print(f"[bold blue]Style:[/bold blue] {style}")
 
     if cloud:
         _build_cloud(
             prompt=prompt,
-            image_url=resolved_image_url,
+            image_url=image_path,  # type: ignore  # May be URL for cloud mode
             mode=str(mode.value if mode else "standard"),
             style=str(style.value if style else "auto"),
             verbose=verbose,
@@ -1287,7 +1287,7 @@ def build(
     else:
         _build_local(
             prompt=prompt,
-            image_url=resolved_image_url,
+            image_path=image_path,
             mode=str(mode.value if mode else "standard"),
             style=str(style.value if style else "auto"),
             verbose=verbose,
@@ -1311,6 +1311,12 @@ def edit(
         "-s",
         help="Visual style (default: from config or 'auto')",
     ),
+    image_url: Optional[str] = typer.Option(
+        None,
+        "--image",
+        "-i",
+        help="URL or local path to reference image",
+    ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
     ),
@@ -1331,8 +1337,20 @@ def edit(
     if style is None:
         style = BuildStyle(config.get("generation.default_style", BuildStyle.auto))
 
+    # Validate image path or URL if provided
+    image_path: Optional[str] = None
+    if image_url:
+        if FilePath(image_url).is_file():
+            image_path = image_url
+        elif image_url.startswith(("http://", "https://")):
+            image_path = image_url
+        else:
+            console.print(f"[yellow]⚠[/yellow] Image path not found: {image_url}")
+
     console.print(f"[bold blue]Editing model:[/bold blue] {blend_file}")
     console.print(f"[bold blue]Edit prompt:[/bold blue] {prompt}")
+    if image_path:
+        console.print(f"[bold blue]Reference image:[/bold blue] {image_path}")
     console.print(f"[bold blue]Mode:[/bold blue] {mode}")
     console.print(f"[bold blue]Style:[/bold blue] {style}")
 
@@ -1341,6 +1359,7 @@ def edit(
         prompt=prompt,
         mode=str(mode.value if mode else "standard"),
         style=str(style.value if style else "auto"),
+        image_path=image_path,
         verbose=verbose,
         mock=mock,
     )

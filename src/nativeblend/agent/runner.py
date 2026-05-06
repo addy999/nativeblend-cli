@@ -73,7 +73,7 @@ def run_agent(
                 blend_file=state.blend_file,
                 mode=state.mode,
                 style=state.style,
-                image_url=state.image_url,
+                image_path=state.image_path,
             )
             state.current_blend_artifact_id = state.session.current_blend_artifact_id
         else:
@@ -81,7 +81,7 @@ def run_agent(
                 prompt=state.prompt,
                 mode=state.mode,
                 style=state.style,
-                image_url=state.image_url,
+                image_path=state.image_path,
             )
         show(state.session.message)
     else:
