@@ -95,6 +95,8 @@ Use `--style` to control the visual aesthetic of your model:
 - **retro** - Classic retro/pixel-art inspired
 - **pixel-art** - picoCAD/PICO-8 style: low-poly flat-shaded geometry with unlit solid colors from the 16-color PICO-8 palette
 - **gamecube** - GameCube/Wii-era quality: smooth-shaded rounded forms, slightly exaggerated proportions, simple diffuse materials (Animal Crossing meets Majora's Mask)
+- **jrpg** - Isometric RPG fantasy: chibi proportions, ornate fantasy details, rich muted palette with metallic gold accents, smooth-shaded (Final Fantasy style
+  )
 
 ### Change output dir
 
