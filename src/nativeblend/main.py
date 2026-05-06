@@ -429,17 +429,6 @@ def _build_local(
         console.print(f"[red]✗[/red] Blender test failed: {result['error']}")
         raise typer.Exit(1)
 
-    # Set up output directory
-    import uuid
-
-    generation_id = str(uuid.uuid4())[:8]
-    output_dir = os.path.join(
-        config.get("output.default_dir"), f"local_{generation_id}"
-    )
-    os.makedirs(output_dir, exist_ok=True)
-
-    console.print(f"[dim]Output directory: {output_dir}[/dim]")
-
     # Initialize agent API client
     agent_api = AgentAPIClient(mock=mock)
 
@@ -449,7 +438,7 @@ def _build_local(
         mode=mode,
         style=style,
         image_url=image_url,
-        output_dir=output_dir,
+        output_dir="",  # Will be set after session start
     )
 
     # Callbacks for CLI output
@@ -461,6 +450,7 @@ def _build_local(
         console.print(f"[cyan]→[/cyan] {msg}")
 
     # Run the agent
+    generation_id = "unknown"
     try:
         with console.status("[cyan]→[/cyan] Building..."):
             state = run_agent(
@@ -469,18 +459,43 @@ def _build_local(
                 on_log=on_log,
                 on_message=on_message,
             )
+        generation_id = state.session.generation_id if state.session else "unknown"
     except KeyboardInterrupt:
+        generation_id = state.session.generation_id if state.session else "unknown"
+        output_dir = (
+            state.output_dir
+            if state.output_dir
+            else os.path.join(config.get("output.default_dir"), generation_id)
+        )
+        console.print(f"\n[dim]Build ID: {generation_id}[/dim]")
+        console.print(f"[dim]Output directory: {output_dir}[/dim]")
         console.print("\n[yellow]⚠[/yellow] Build cancelled by user")
+        console.print(
+            f"[dim]Resume later with: nativeblend resume {generation_id}[/dim]"
+        )
         raise typer.Exit(1)
     except Exception as e:
+        generation_id = state.session.generation_id if state.session else "unknown"
+        output_dir = (
+            state.output_dir
+            if state.output_dir
+            else os.path.join(config.get("output.default_dir"), generation_id)
+        )
+        console.print(f"[dim]Build ID: {generation_id}[/dim]")
+        console.print(f"[dim]Output directory: {output_dir}[/dim]")
         console.print(
             f"[red]✗[/red] Build failed: {e.response.json().get('detail', '') if hasattr(e, 'response') else str(e)}"  # type: ignore
+        )
+        console.print(
+            f"[dim]Resume later with: nativeblend resume {generation_id}[/dim]"
         )
         if verbose:
             import traceback
 
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         raise typer.Exit(1)
+
+    output_dir = state.output_dir
 
     if state.error:
         elapsed = _time.time() - start_time
@@ -489,8 +504,10 @@ def _build_local(
             Panel(
                 f"[bold red]Build failed[/bold red]\n\n"
                 f"[bold]Prompt:[/bold] {prompt}\n"
+                f"[bold]Build ID:[/bold] {generation_id}\n"
                 f"[bold]Error:[/bold] {state.error}\n"
-                f"[bold]Elapsed time:[/bold] {elapsed:.1f}s",
+                f"[bold]Elapsed time:[/bold] {elapsed:.1f}s\n\n"
+                f"[dim]Resume with: nativeblend resume {generation_id}[/dim]",
                 title="Failed",
                 border_style="red",
             )
@@ -501,11 +518,11 @@ def _build_local(
     if state.code:
         try:
             console.print("[cyan]→[/cyan] Exporting Blender file...")
-            blend_path = export_blender_file_local(state.code, f"local_{generation_id}")
+            blend_path = export_blender_file_local(state.code, generation_id)
             console.print(f"[green]✓[/green] Blender file: {blend_path}")
 
             console.print("[cyan]→[/cyan] Exporting GLB model...")
-            glb_path = export_glb_local(state.code, f"local_{generation_id}")
+            glb_path = export_glb_local(state.code, generation_id)
             console.print(f"[green]✓[/green] Model file: {glb_path}")
         except Exception as e:
             console.print(f"[yellow]⚠[/yellow] Export failed: {e}")
@@ -518,6 +535,7 @@ def _build_local(
             f"[bold]Prompt:[/bold] {prompt}\n"
             f"[bold]Mode:[/bold] {mode}\n"
             f"[bold]Style:[/bold] {style}\n"
+            f"[bold]Build ID:[/bold] {generation_id}\n"
             f"[bold]Elapsed time:[/bold] {elapsed:.1f}s\n"
             f"[bold]Output:[/bold] {output_dir}",
             title="Success",
@@ -549,15 +567,12 @@ def _edit_local(
         prompt_blender_download()
         raise typer.Exit(1)
 
-    generation_id = str(uuid.uuid4())[:8]
-    output_dir = os.path.join(
-        config.get("output.default_dir"), f"local_edit_{generation_id}"
-    )
-    os.makedirs(output_dir, exist_ok=True)
-    console.print(f"[dim]Output directory: {output_dir}[/dim]")
-
     # Work on a copy so the original .blend is never overwritten.
-    working_blend = os.path.join(output_dir, f"working_{blend_path.name}")
+    # Use a temp directory initially; will move to server-side generation_id dir after session start.
+    import tempfile
+
+    temp_dir = tempfile.mkdtemp(prefix="nativeblend_edit_")
+    working_blend = os.path.join(temp_dir, f"working_{blend_path.name}")
     shutil.copy2(str(blend_path), working_blend)
 
     agent_api = AgentAPIClient(mock=mock)
@@ -568,7 +583,7 @@ def _edit_local(
         original_blend_file=str(blend_path),
         mode=mode,
         style=style,
-        output_dir=output_dir,
+        output_dir="",  # Will be set after session start with server-side generation_id
     )
 
     def on_log(msg: str) -> None:
@@ -578,22 +593,61 @@ def _edit_local(
     def on_message(msg: str) -> None:
         console.print(f"[cyan]→[/cyan] {msg}")
 
+    generation_id = "unknown"
     try:
         with console.status("[cyan]→[/cyan] Editing..."):
             state = run_agent(state, agent_api, on_log=on_log, on_message=on_message)
+        generation_id = state.session.generation_id if state.session else "unknown"
     except KeyboardInterrupt:
+        generation_id = state.session.generation_id if state.session else "unknown"
+        output_dir = (
+            state.output_dir
+            if state.output_dir
+            else os.path.join(config.get("output.default_dir"), generation_id)
+        )
+        console.print(f"\n[dim]Build ID: {generation_id}[/dim]")
+        console.print(f"[dim]Output directory: {output_dir}[/dim]")
         console.print("\n[yellow]⚠[/yellow] Edit cancelled by user")
+        console.print(
+            f"[dim]Resume later with: nativeblend resume {generation_id}[/dim]"
+        )
         raise typer.Exit(1)
     except Exception as e:
+        generation_id = state.session.generation_id if state.session else "unknown"
+        output_dir = (
+            state.output_dir
+            if state.output_dir
+            else os.path.join(config.get("output.default_dir"), generation_id)
+        )
+        console.print(f"[dim]Build ID: {generation_id}[/dim]")
+        console.print(f"[dim]Output directory: {output_dir}[/dim]")
         console.print(f"[red]✗[/red] Edit failed: {e}")
+        console.print(
+            f"[dim]Resume later with: nativeblend resume {generation_id}[/dim]"
+        )
         if verbose:
             import traceback
 
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         raise typer.Exit(1)
 
+    output_dir = state.output_dir
+
     if state.error:
-        console.print(f"[red]✗[/red] Edit failed: {state.error}")
+        elapsed = _time.time() - start_time
+        console.print()
+        console.print(
+            Panel(
+                f"[bold red]Edit failed[/bold red]\n\n"
+                f"[bold]Prompt:[/bold] {prompt}\n"
+                f"[bold]Build ID:[/bold] {generation_id}\n"
+                f"[bold]Error:[/bold] {state.error}\n"
+                f"[bold]Elapsed time:[/bold] {elapsed:.1f}s\n\n"
+                f"[dim]Resume with: nativeblend resume {generation_id}[/dim]",
+                title="Failed",
+                border_style="red",
+            )
+        )
         raise typer.Exit(1)
 
     if state.code:
@@ -601,7 +655,7 @@ def _edit_local(
             console.print("[cyan]→[/cyan] Exporting edited Blender file...")
             blend_path_out = export_blender_file_local(
                 state.code,
-                f"local_edit_{generation_id}",
+                generation_id,
                 blend_file_path=state.blend_file,
             )
             console.print(f"[green]✓[/green] Blender file: {blend_path_out}")
@@ -609,7 +663,7 @@ def _edit_local(
             console.print("[cyan]→[/cyan] Exporting edited GLB model...")
             glb_path = export_glb_local(
                 state.code,
-                f"local_edit_{generation_id}",
+                generation_id,
                 blend_file_path=state.blend_file,
             )
             console.print(f"[green]✓[/green] Model file: {glb_path}")
@@ -626,6 +680,170 @@ def _edit_local(
             f"[bold]Prompt:[/bold] {prompt}\n"
             f"[bold]Mode:[/bold] {mode}\n"
             f"[bold]Style:[/bold] {style}\n"
+            f"[bold]Build ID:[/bold] {generation_id}\n"
+            f"[bold]Elapsed time:[/bold] {elapsed:.1f}s\n"
+            f"[bold]Output:[/bold] {output_dir}",
+            title="Success",
+            border_style="green",
+        )
+    )
+
+
+def _resume_local(
+    generation_id: str,
+    verbose: bool = False,
+) -> None:
+    """Resume an incomplete generation session using the server-side generation_id."""
+    import time as _time
+
+    start_time = _time.time()
+
+    # Check authentication first
+    api_key = config.get_api_key()
+    if not api_key:
+        console.print(
+            "[red]✗[/red] Not authenticated. Run 'nativeblend auth login' first."
+        )
+        raise typer.Exit(1)
+
+    # Fetch generation metadata from server
+    client = APIClient()
+    console.print(f"[cyan]→[/cyan] Fetching generation {generation_id}...")
+    gen_data = client.get_generation(generation_id)
+
+    if not gen_data:
+        console.print(f"[red]✗[/red] Generation {generation_id} not found")
+        raise typer.Exit(1)
+
+    # Check if generation is resumable
+    status = gen_data.get("status", "")
+    if status in ("SUCCESS"):
+        console.print(f"[red]✗[/red] Cannot resume generation with status: {status}")
+        raise typer.Exit(1)
+
+    # Extract generation parameters
+    prompt = gen_data.get("prompt", "")
+    mode = gen_data.get("mode", "standard")
+    style = gen_data.get("style", "auto")
+
+    if not prompt:
+        console.print("[red]✗[/red] Generation has no prompt associated")
+        raise typer.Exit(1)
+
+    console.print(f"[dim]Prompt:[/dim] {prompt}")
+    console.print(f"[dim]Mode:[/dim] {mode}")
+    console.print(f"[dim]Style:[/dim] {style}")
+
+    # Ensure Blender works
+    blender_path = config.get_blender_path()
+    if not check_blender_exists(blender_path):
+        prompt_blender_download()
+        raise typer.Exit(1)
+
+    result = run_blender_script_local(
+        'import bpy; print("Blender is working")',
+        blender_path=blender_path,
+        timeout=10,
+    )
+    if result.get("error"):
+        console.print(f"[red]✗[/red] Blender test failed: {result['error']}")
+        raise typer.Exit(1)
+
+    # Set up output directory using the server-side generation_id
+    output_dir = os.path.join(config.get("output.default_dir"), generation_id)
+    os.makedirs(output_dir, exist_ok=True)
+    console.print(f"[dim]Output directory: {output_dir}[/dim]")
+
+    # Initialize agent API client
+    agent_api = AgentAPIClient()
+
+    # Initialize agent state with session pre-populated for resume
+    from .agent.states import SessionInfo
+
+    state = AgentState(
+        prompt=prompt,
+        mode=mode,
+        style=style,
+        output_dir=output_dir,
+        session=SessionInfo(
+            generation_id=generation_id,
+            workflow="build",
+        ),
+    )
+
+    # Callbacks for CLI output
+    def on_log(msg: str) -> None:
+        if verbose:
+            console.print(f"[cyan]→[/cyan] {msg}")
+
+    def on_message(msg: str) -> None:
+        console.print(f"[cyan]→[/cyan] {msg}")
+
+    # Run the agent in resume mode
+    try:
+        with console.status("[cyan]→[/cyan] Resuming build..."):
+            state = run_agent(
+                state,
+                agent_api,
+                on_log=on_log,
+                on_message=on_message,
+                resume=True,
+            )
+    except KeyboardInterrupt:
+        console.print(f"\n[dim]Build ID: {generation_id}[/dim]")
+        console.print(f"[dim]Output directory: {output_dir}[/dim]")
+        console.print("\n[yellow]⚠[/yellow] Resume cancelled by user")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[dim]Build ID: {generation_id}[/dim]")
+        console.print(f"[dim]Output directory: {output_dir}[/dim]")
+        console.print(
+            f"[red]✗[/red] Resume failed: {e.response.json().get('detail', '') if hasattr(e, 'response') else str(e)}"  # type: ignore
+        )
+        if verbose:
+            import traceback
+
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise typer.Exit(1)
+
+    if state.error:
+        elapsed = _time.time() - start_time
+        console.print()
+        console.print(
+            Panel(
+                f"[bold red]Resume failed[/bold red]\n\n"
+                f"[bold]Prompt:[/bold] {prompt}\n"
+                f"[bold]Build ID:[/bold] {generation_id}\n"
+                f"[bold]Error:[/bold] {state.error}\n"
+                f"[bold]Elapsed time:[/bold] {elapsed:.1f}s",
+                title="Failed",
+                border_style="red",
+            )
+        )
+        raise typer.Exit(1)
+
+    # Export final model
+    if state.code:
+        try:
+            console.print("[cyan]→[/cyan] Exporting Blender file...")
+            blend_path = export_blender_file_local(state.code, generation_id)
+            console.print(f"[green]✓[/green] Blender file: {blend_path}")
+
+            console.print("[cyan]→[/cyan] Exporting GLB model...")
+            glb_path = export_glb_local(state.code, generation_id)
+            console.print(f"[green]✓[/green] Model file: {glb_path}")
+        except Exception as e:
+            console.print(f"[yellow]⚠[/yellow] Export failed: {e}")
+
+    elapsed = _time.time() - start_time
+    console.print()
+    console.print(
+        Panel(
+            f"[bold green]Model build completed![/bold green]\n\n"
+            f"[bold]Prompt:[/bold] {prompt}\n"
+            f"[bold]Mode:[/bold] {mode}\n"
+            f"[bold]Style:[/bold] {style}\n"
+            f"[bold]Build ID:[/bold] {generation_id}\n"
             f"[bold]Elapsed time:[/bold] {elapsed:.1f}s\n"
             f"[bold]Output:[/bold] {output_dir}",
             title="Success",
@@ -1125,6 +1343,31 @@ def edit(
         style=str(style.value if style else "auto"),
         verbose=verbose,
         mock=mock,
+    )
+
+
+@app.command("resume")
+def resume(
+    generation_id: str = typer.Argument(help="Generation ID to resume"),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Enable verbose output"
+    ),
+):
+    """Resume an incomplete generation session.
+
+    Use this to reconnect to a generation that was interrupted (network issue,
+    system restart, user cancellation). The generation must not be completed,
+    failed, or revoked.
+
+    Examples:
+        nativeblend resume abc123xyz
+        nativeblend resume abc123xyz --verbose
+    """
+    console.print(f"[bold blue]Resuming generation:[/bold blue] {generation_id}")
+
+    _resume_local(
+        generation_id=generation_id,
+        verbose=verbose,
     )
 
 

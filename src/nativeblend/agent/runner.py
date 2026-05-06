@@ -35,6 +35,7 @@ def run_agent(
     *,
     on_log: Optional[Callable[[str], None]] = None,
     on_message: Optional[Callable[[str], None]] = None,
+    resume: bool = False,
 ) -> AgentState:
     """Run the local agent loop.
 
@@ -57,31 +58,49 @@ def run_agent(
         if msg and on_message:
             on_message(msg)
 
-    # --- Start session ---
-    log(
-        "Starting editor session..."
-        if state.workflow == "edit"
-        else "Starting generation session..."
-    )
-    if state.workflow == "edit":
-        if not state.blend_file:
-            raise ValueError("Editor workflow requires a .blend file")
-        state.session = api.start_editor_session(
-            prompt=state.prompt,
-            blend_file=state.blend_file,
-            mode=state.mode,
-            style=state.style,
-            image_url=state.image_url,
+    # --- Start session (or resume existing) ---
+    if not resume:
+        log(
+            "Starting editor session..."
+            if state.workflow == "edit"
+            else "Starting generation session..."
         )
-        state.current_blend_artifact_id = state.session.current_blend_artifact_id
+        if state.workflow == "edit":
+            if not state.blend_file:
+                raise ValueError("Editor workflow requires a .blend file")
+            state.session = api.start_editor_session(
+                prompt=state.prompt,
+                blend_file=state.blend_file,
+                mode=state.mode,
+                style=state.style,
+                image_url=state.image_url,
+            )
+            state.current_blend_artifact_id = state.session.current_blend_artifact_id
+        else:
+            state.session = api.start_session(
+                prompt=state.prompt,
+                mode=state.mode,
+                style=state.style,
+                image_url=state.image_url,
+            )
+        show(state.session.message)
     else:
-        state.session = api.start_session(
-            prompt=state.prompt,
-            mode=state.mode,
-            style=state.style,
-            image_url=state.image_url,
+        log("Resuming existing session...")
+        show(
+            f"Resuming build {state.session.generation_id if state.session else 'unknown'}"
         )
-    show(state.session.message)
+
+    # Update output_dir to use server-side generation_id if not already set
+    if state.session and state.session.generation_id and not state.output_dir:
+        state.output_dir = os.path.join(
+            config.get("output.default_dir"), state.session.generation_id
+        )
+        os.makedirs(state.output_dir, exist_ok=True)
+
+    # Show build_id and output_dir early so user can reference them
+    if state.session and state.session.generation_id:
+        log(f"Build ID: {state.session.generation_id}")
+        log(f"Output directory: {state.output_dir}")
 
     # --- Step loop ---
     revision = 0

@@ -533,6 +533,20 @@ class APIClient:
         except requests.RequestException:
             return None
 
+    def get_generation(self, generation_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch generation metadata including prompt, mode, style, status."""
+        try:
+            response = requests.get(
+                self._url(f"generate/{generation_id}"),
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except requests.RequestException:
+            return None
+
     def export_checkpoint(
         self, generation_id: str, checkpoint_id: str
     ) -> Optional[Dict[str, Any]]:
