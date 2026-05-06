@@ -407,7 +407,6 @@ def _build_local(
     mode: str,
     style: str,
     verbose: bool = False,
-    mock: bool = False,
 ) -> None:
     """Run the local agent loop — Blender runs locally, LLM calls go to the API."""
     import time as _time
@@ -430,7 +429,7 @@ def _build_local(
         raise typer.Exit(1)
 
     # Initialize agent API client
-    agent_api = AgentAPIClient(mock=mock)
+    agent_api = AgentAPIClient()
 
     # Initialize agent state
     state = AgentState(
@@ -483,9 +482,12 @@ def _build_local(
         )
         console.print(f"[dim]Build ID: {generation_id}[/dim]")
         console.print(f"[dim]Output directory: {output_dir}[/dim]")
-        console.print(
-            f"[red]✗[/red] Build failed: {e.response.json().get('detail', '') if hasattr(e, 'response') else str(e)}"  # type: ignore
-        )
+        try:
+            console.print(
+                f"[red]✗[/red] Build failed: {e.response.json().get('detail', '')}"  # type: ignore
+            )
+        except:
+            console.print(f"[red]✗[/red] Build failed: {str(e)}")  # type: ignore
         console.print(
             f"[dim]Resume later with: nativeblend resume {generation_id}[/dim]"
         )
@@ -551,7 +553,6 @@ def _edit_local(
     style: str,
     image_path: Optional[str] = None,
     verbose: bool = False,
-    mock: bool = False,
 ) -> None:
     """Run the local editor loop against an uploaded .blend file."""
     import time as _time
@@ -576,7 +577,7 @@ def _edit_local(
     working_blend = os.path.join(temp_dir, f"working_{blend_path.name}")
     shutil.copy2(str(blend_path), working_blend)
 
-    agent_api = AgentAPIClient(mock=mock)
+    agent_api = AgentAPIClient()
     state = AgentState(
         prompt=prompt,
         workflow="edit",
@@ -754,6 +755,7 @@ def _resume_local(
     # Set up output directory using the server-side generation_id
     output_dir = os.path.join(config.get("output.default_dir"), generation_id)
     os.makedirs(output_dir, exist_ok=True)
+    console.print(f"[dim]Build ID: {generation_id}[/dim]")
     console.print(f"[dim]Output directory: {output_dir}[/dim]")
 
     # Initialize agent API client
@@ -1228,12 +1230,6 @@ def build(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
     ),
-    cloud: bool = typer.Option(
-        False, "--cloud", help="Use cloud-based generation (legacy mode)"
-    ),
-    mock: bool = typer.Option(
-        False, "--mock", hidden=True, help="Use server-side mock endpoints for testing"
-    ),
 ):
     """
     Build a 3D model from a natural language prompt.
@@ -1276,26 +1272,25 @@ def build(
     console.print(f"[bold blue]Mode:[/bold blue] {mode}")
     console.print(f"[bold blue]Style:[/bold blue] {style}")
 
-    if cloud:
-        _build_cloud(
-            prompt=prompt,
-            image_url=image_path,  # type: ignore  # May be URL for cloud mode
-            mode=str(mode.value if mode else "standard"),
-            style=str(style.value if style else "auto"),
-            verbose=verbose,
-        )
-    else:
-        _build_local(
-            prompt=prompt,
-            image_path=image_path,
-            mode=str(mode.value if mode else "standard"),
-            style=str(style.value if style else "auto"),
-            verbose=verbose,
-            mock=mock,
-        )
+    # if cloud:
+    #     _build_cloud(
+    #         prompt=prompt,
+    #         image_url=image_path,  # type: ignore  # May be URL for cloud mode
+    #         mode=str(mode.value if mode else "standard"),
+    #         style=str(style.value if style else "auto"),
+    #         verbose=verbose,
+    #     )
+    # else:
+    _build_local(
+        prompt=prompt,
+        image_path=image_path,
+        mode=str(mode.value if mode else "standard"),
+        style=str(style.value if style else "auto"),
+        verbose=verbose,
+    )
 
 
-@app.command("edit")
+@app.command("edit", hidden=True)
 def edit(
     blend_file: str = typer.Argument(help="Local .blend file to edit"),
     prompt: str = typer.Argument(help="Natural language edit instruction"),
@@ -1319,9 +1314,6 @@ def edit(
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
-    ),
-    mock: bool = typer.Option(
-        False, "--mock", hidden=True, help="Use server-side mock endpoints for testing"
     ),
 ):
     """Edit an existing local .blend file with a natural language instruction."""
@@ -1361,7 +1353,6 @@ def edit(
         style=str(style.value if style else "auto"),
         image_path=image_path,
         verbose=verbose,
-        mock=mock,
     )
 
 

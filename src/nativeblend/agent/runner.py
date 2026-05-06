@@ -98,9 +98,10 @@ def run_agent(
         os.makedirs(state.output_dir, exist_ok=True)
 
     # Show build_id and output_dir early so user can reference them
+    # Use show() not log() so these always appear (even without --verbose)
     if state.session and state.session.generation_id:
-        log(f"Build ID: {state.session.generation_id}")
-        log(f"Output directory: {state.output_dir}")
+        show(f"Build ID: {state.session.generation_id}")
+        show(f"Output directory: {state.output_dir}")
 
     # --- Step loop ---
     revision = 0
